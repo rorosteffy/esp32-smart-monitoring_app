@@ -6,7 +6,6 @@ import pandas as pd
 import altair as alt
 from datetime import datetime
 import os
-from streamlit_autorefresh import st_autorefresh
 
 # ==========================
 # CONFIG MQTT
@@ -144,9 +143,6 @@ def build_dashboard(mqtt_ok: bool):
         layout="wide",
     )
 
-    # Auto-refresh toutes les 2 secondes (côté front, propre pour le Cloud)
-    st_autorefresh(interval=2000, key="mqtt_refresh")
-
     # --------- CSS : fond, cartes, logo clignotant ---------
     st.markdown(
         """
@@ -277,7 +273,7 @@ def build_dashboard(mqtt_ok: bool):
 
     st.markdown("---")
 
-    # --------- Graphiques en temps réel (EN BÂTONNETS) ---------
+    # --------- Graphiques en temps réel (barres) ---------
     st.subheader("📊 Graphiques en temps réel")
 
     if len(data_history) == 0:
@@ -290,7 +286,7 @@ def build_dashboard(mqtt_ok: bool):
 
         col_g1, col_g2 = st.columns(2)
 
-        # --- Température (barres) ---
+        # Température
         with col_g1:
             temp_chart = (
                 alt.Chart(df)
@@ -304,7 +300,7 @@ def build_dashboard(mqtt_ok: bool):
             )
             st.altair_chart(temp_chart, use_container_width=True)
 
-        # --- Humidité (barres) ---
+        # Humidité
         with col_g2:
             hum_chart = (
                 alt.Chart(df)
@@ -320,7 +316,7 @@ def build_dashboard(mqtt_ok: bool):
 
         col_g3, col_g4 = st.columns(2)
 
-        # --- Flamme (0/1, barres) ---
+        # Flamme
         with col_g3:
             flame_chart = (
                 alt.Chart(df)
@@ -334,7 +330,7 @@ def build_dashboard(mqtt_ok: bool):
             )
             st.altair_chart(flame_chart, use_container_width=True)
 
-        # --- Potentiomètre (barres) ---
+        # Potentiomètre
         with col_g4:
             pot_chart = (
                 alt.Chart(df)
