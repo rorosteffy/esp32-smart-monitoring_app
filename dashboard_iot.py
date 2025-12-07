@@ -6,6 +6,7 @@ import time
 import pandas as pd
 import altair as alt
 from datetime import datetime
+import os
 
 # ==========================
 # CONFIG MQTT
@@ -15,11 +16,19 @@ MQTT_PORT = 1883
 TOPIC_DATA = "capteur/data"   # JSON global envoyé par l’ESP32
 
 # ==========================
+# FICHIER LOGO
+# ==========================
+# Nom du fichier dans le repo
+LOGO_FILENAME = "LOGO_EPHEC_HE.png"
+# Chemin absolu du script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Chemin complet vers le logo
+LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
+
+# ==========================
 # ETAT GLOBAL – 1ère initialisation uniquement
 # ==========================
 
-# Ces "if 'xxx' not in globals()" évitent que Streamlit
-# réinitialise les variables à chaque rerun.
 if "mqtt_client" not in globals():
     mqtt_client = None
 
@@ -105,10 +114,11 @@ def on_message(client, userdata, msg):
         "pot": last_data["pot"],
     })
 
-    # (optionnel) Sauvegarde CSV automatique
+    # Sauvegarde CSV automatique (optionnel)
     try:
         with open("historique_mesures.csv", "a", encoding="utf-8") as f:
-            line = f"{last_data['last_update']};{last_data['temperature']};{last_data['humidity']};{last_data['flame']};{last_data['pot']}\n"
+            line = f"{last_data['last_update']};{last_data['temperature']};" \
+                   f"{last_data['humidity']};{last_data['flame']};{last_data['pot']}\n"
             f.write(line)
     except Exception as e:
         print("Erreur écriture CSV :", e)
@@ -139,7 +149,7 @@ def start_mqtt():
                 mqtt_client.loop_forever()
             except Exception as e:
                 print("⚠️ Erreur dans la boucle MQTT :", e)
-                time.sleep(5)  # petite pause avant de retenter
+                time.sleep(5)
 
     mqtt_thread = threading.Thread(target=_mqtt_loop, daemon=True)
     mqtt_thread.start()
@@ -159,8 +169,15 @@ def build_dashboard():
     # --------- Bandeau titre + logo EPHEC ---------
     col_logo, col_title = st.columns([1, 5])
     with col_logo:
-        # Image dans le même dossier : LOGO_EPHEC_HE.png
-        st.image("LOGO_EPHEC_HE.png", width=130)
+        # On essaie d’afficher le logo, sans planter si le fichier manque
+        try:
+            if os.path.exists(LOGO_PATH):
+                st.image(LOGO_PATH, width=130)
+            else:
+                # Fallback : on tente avec le nom simple, ou juste le texte
+                st.image(LOGO_FILENAME, width=130)
+        except Exception:
+            st.markdown("**EPHEC**")
     with col_title:
         st.markdown(
             "<h1 style='margin-bottom:0.2em;'>Gestion Intelligente Température & Sécurité – IoT</h1>",
@@ -238,7 +255,6 @@ def build_dashboard():
     else:
         df = pd.DataFrame(data_history)
 
-        # Température & Humidité
         col_g1, col_g2 = st.columns(2)
 
         with col_g1:
@@ -267,7 +283,6 @@ def build_dashboard():
             )
             st.altair_chart(hum_chart, use_container_width=True)
 
-        # Flamme & Potentiomètre
         col_g3, col_g4 = st.columns(2)
 
         with col_g3:
@@ -326,7 +341,6 @@ def build_dashboard():
         except FileNotFoundError:
             st.info("Aucun fichier CSV encore créé (attends la première mesure).")
 
-    # Petite info sur la dernière mise à jour
     if last_data["last_update"] is not None:
         st.caption(f"Dernière mise à jour : {last_data['last_update']}")
     else:
@@ -338,9 +352,7 @@ def build_dashboard():
 # ==========================
 
 def main():
-    # On s’assure que le client MQTT tourne en arrière-plan
     start_mqtt()
-    # Puis on construit le dashboard
     build_dashboard()
 
 
