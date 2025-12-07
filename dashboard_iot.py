@@ -6,6 +6,7 @@ import pandas as pd
 import altair as alt
 from datetime import datetime
 import os
+from streamlit_autorefresh import st_autorefresh
 
 # ==========================
 # CONFIG MQTT
@@ -50,12 +51,20 @@ if "data_history" not in st.session_state:
 
 def poll_mqtt():
     """
-    Se connecte au broker, écoute brièvement, et retourne
-    le dernier message reçu (texte JSON) ou None.
+    Se connecte au broker, écoute brièvement, et retourne :
+    - le dernier message reçu (texte JSON) ou None
+    - un booléen indiquant si la connexion MQTT a réussi.
     Pas de thread, pas de boucle infinie → compatible Streamlit Cloud.
     """
     client = mqtt.Client()
     messages = []
+    connected = False
+
+    def _on_connect(client, userdata, flags, rc):
+        nonlocal connected
+        print("poll_mqtt on_connect rc =", rc)
+        if rc == 0:
+            connected = True
 
     def _on_message(client, userdata, msg):
         try:
@@ -63,24 +72,24 @@ def poll_mqtt():
         except Exception:
             pass
 
+    client.on_connect = _on_connect
     client.on_message = _on_message
 
     try:
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        rc = client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        if rc == 0:
+            connected = True
         client.subscribe(TOPIC_DATA)
         client.loop_start()
-        time.sleep(0.5)  # on laisse 0.5 s pour recevoir au moins 1 message
+        time.sleep(1.0)  # on laisse 1 s pour recevoir au moins 1 message
         client.loop_stop()
         client.disconnect()
     except Exception as e:
         print("Erreur MQTT (poll) :", e)
-        return None
+        return None, False
 
-    if messages:
-        # on renvoie le dernier message reçu
-        return messages[-1]
-
-    return None
+    last_msg = messages[-1] if messages else None
+    return last_msg, connected
 
 
 # ==========================
@@ -142,6 +151,9 @@ def build_dashboard(mqtt_ok: bool):
         page_title="Gestion Intelligente Température & Sécurité – IoT",
         layout="wide",
     )
+
+    # Auto-refresh toutes les 2 secondes
+    st_autorefresh(interval=2000, key="mqtt_refresh")
 
     # --------- CSS : fond, cartes, logo clignotant ---------
     st.markdown(
@@ -386,15 +398,14 @@ def build_dashboard(mqtt_ok: bool):
 
 def main():
     # 1. Un petit poll MQTT à chaque refresh
-    raw = poll_mqtt()
-    mqtt_ok = False
+    raw, connected = poll_mqtt()
+    mqtt_ok = connected
 
     if raw:
         try:
             payload = json.loads(raw)
             print("MQTT message reçu :", payload)
             update_from_payload(payload)
-            mqtt_ok = True
         except Exception as e:
             print("Erreur JSON :", e)
 
