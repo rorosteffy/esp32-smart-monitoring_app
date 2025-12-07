@@ -8,12 +8,6 @@ import altair as alt
 from datetime import datetime
 import os
 
-# Pour le rafraîchissement automatique (sans experimental_rerun)
-try:
-    from streamlit_autorefresh import st_autorefresh
-except ImportError:
-    st_autorefresh = None
-
 # ==========================
 # CONFIG MQTT
 # ==========================
@@ -29,7 +23,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
 
 # ==========================
-# ETAT GLOBAL (pour le thread MQTT)
+# ETAT GLOBAL
 # ==========================
 
 if "mqtt_client" not in globals():
@@ -59,8 +53,7 @@ if "last_data" not in globals():
     }
 
 if "data_history" not in globals():
-    # Chaque entrée : {"time": datetime, "temperature":..., "humidity":..., "flame":..., "pot":...}
-    data_history = []
+    data_history = []  # {"time": datetime, "temperature":..., "humidity":..., "flame":..., "pot":...}
 
 
 # ==========================
@@ -76,7 +69,7 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe(TOPIC_DATA)
     else:
         mqtt_connected = False
-        print("❌ Erreur de connexion MQTT (rc =", rc, ")")
+        print("❌ Erreur de connexion MQTT")
 
 
 def on_disconnect(client, userdata, rc):
@@ -98,17 +91,17 @@ def on_message(client, userdata, msg):
 
     # Mise à jour du dernier état
     last_data["temperature"] = payload.get("temperature")
-    last_data["humidity"] = payload.get("humidity")
-    last_data["tempSeuil"] = payload.get("tempSeuil")
-    last_data["humSeuil"] = payload.get("humSeuil")
-    last_data["flame"] = payload.get("flame")
-    last_data["flameRaw"] = payload.get("flameRaw")
-    last_data["pot"] = payload.get("pot")
-    last_data["seuilPot"] = payload.get("seuilPot")
-    last_data["alarm"] = payload.get("alarm")
+    last_data["humidity"]    = payload.get("humidity")
+    last_data["tempSeuil"]   = payload.get("tempSeuil")
+    last_data["humSeuil"]    = payload.get("humSeuil")
+    last_data["flame"]       = payload.get("flame")
+    last_data["flameRaw"]    = payload.get("flameRaw")
+    last_data["pot"]         = payload.get("pot")
+    last_data["seuilPot"]    = payload.get("seuilPot")
+    last_data["alarm"]       = payload.get("alarm")
     last_data["last_update"] = datetime.now()
 
-    # Historique pour les graphes (tiges)
+    # Historique pour les graphes
     data_history.append({
         "time": last_data["last_update"],
         "temperature": last_data["temperature"],
@@ -165,6 +158,18 @@ def start_mqtt():
 
 
 # ==========================
+# FONCTION RERUN COMPATIBLE
+# ==========================
+
+def safe_rerun():
+    """st.rerun() sur les nouvelles versions, sinon st.experimental_rerun()."""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+
+
+# ==========================
 # UI STREAMLIT
 # ==========================
 
@@ -179,28 +184,12 @@ def build_dashboard():
         """
         <style>
         .stApp {
-            background: radial-gradient(circle at top left,
-                #f5f0ff 0, #dbe2ff 35%, #c8d9ff 65%, #b8d3ff 100%);
+            background: radial-gradient(circle at top left, #f5f0ff 0, #dbe2ff 35%, #c8d9ff 65%, #b8d3ff 100%);
             color: #0f172a;
         }
-        .stAlert, .stMetric, .st-emotion-cache-16idsys, .st-emotion-cache-1r6slb0 {
-            border-radius: 12px !important;
-            padding: 0.75rem 1.25rem !important;
-        }
-        .st-emotion-cache-1avcm0n {
-            border-radius: 14px !important;
-        }
-        h1 {
-            color: #0f172a;
-            font-weight: 800;
-        }
-        h2, h3 {
-            color: #111827;
-            font-weight: 700;
-        }
-        .ephec-logo {
-            animation: pulse-logo 2s infinite;
-        }
+        h1 { color: #0f172a; font-weight: 800; }
+        h2, h3 { color: #111827; font-weight: 700; }
+        .ephec-logo { animation: pulse-logo 2s infinite; }
         @keyframes pulse-logo {
             0%   { opacity: 0.35; transform: translateY(0px); }
             50%  { opacity: 1.0;  transform: translateY(-2px); }
@@ -217,9 +206,9 @@ def build_dashboard():
     with col_logo:
         try:
             if os.path.exists(LOGO_PATH):
-                st.image(LOGO_PATH, width=130)
+                st.image(LOGO_PATH, width=130, caption=None, output_format="PNG")
             else:
-                st.image(LOGO_FILENAME, width=130)
+                st.image(LOGO_FILENAME, width=130, caption=None, output_format="PNG")
             st.markdown("<div class='ephec-logo'></div>", unsafe_allow_html=True)
         except Exception:
             st.markdown("**EPHEC**")
@@ -293,19 +282,16 @@ def build_dashboard():
 
     st.markdown("---")
 
-    # --------- Graphiques en temps réel (barres) ---------
+    # --------- Graphiques en temps réel (BARRES) ---------
     st.subheader("📊 Graphiques en temps réel")
 
     if len(data_history) == 0:
         st.info("En attente de données temps réel des capteurs…")
     else:
-        df = pd.DataFrame(data_history)
-        # On limite aux 100 derniers points pour garder des tiges lisibles
-        df = df.tail(100)
+        df = pd.DataFrame(data_history).tail(100)  # 100 derniers points
 
         col_g1, col_g2 = st.columns(2)
 
-        # Température (barres)
         with col_g1:
             temp_chart = (
                 alt.Chart(df)
@@ -319,7 +305,6 @@ def build_dashboard():
             )
             st.altair_chart(temp_chart, use_container_width=True)
 
-        # Humidité (barres)
         with col_g2:
             hum_chart = (
                 alt.Chart(df)
@@ -335,7 +320,6 @@ def build_dashboard():
 
         col_g3, col_g4 = st.columns(2)
 
-        # Flamme (0/1, barres)
         with col_g3:
             flame_chart = (
                 alt.Chart(df)
@@ -349,7 +333,6 @@ def build_dashboard():
             )
             st.altair_chart(flame_chart, use_container_width=True)
 
-        # Potentiomètre (barres)
         with col_g4:
             pot_chart = (
                 alt.Chart(df)
@@ -380,7 +363,6 @@ def build_dashboard():
             data_history.clear()
             st.success("Historique effacé (la prochaine mesure remplira à nouveau les graphiques).")
 
-        # Téléchargement CSV (si le fichier existe)
         try:
             with open("historique_mesures.csv", "r", encoding="utf-8") as f:
                 csv_content = f.read()
@@ -404,15 +386,11 @@ def build_dashboard():
 # ==========================
 
 def main():
-    # Lance le client MQTT en arrière-plan
     start_mqtt()
-
-    # Rafraîchissement automatique toutes les 1 seconde
-    if st_autorefresh is not None:
-        st_autorefresh(interval=1000, key="mqtt-refresh")
-
-    # Construit le dashboard
     build_dashboard()
+    # Re-lance le script en boucle pour mettre à jour
+    time.sleep(1)
+    safe_rerun()
 
 
 if __name__ == "__main__":
