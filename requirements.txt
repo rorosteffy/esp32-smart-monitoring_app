@@ -2,3 +2,4 @@ streamlit
 paho-mqtt
 pandas
 altair
+streamlit-autorefresh
