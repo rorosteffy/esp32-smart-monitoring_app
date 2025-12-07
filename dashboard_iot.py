@@ -1,7 +1,6 @@
 import streamlit as st
 import paho.mqtt.client as mqtt
 import json
-import threading
 import time
 import pandas as pd
 import altair as alt
@@ -23,23 +22,16 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
 
 # ==========================
-# ETAT GLOBAL
+# INIT SESSION_STATE
 # ==========================
+if "mqtt_client" not in st.session_state:
+    st.session_state.mqtt_client = None
 
-if "mqtt_client" not in globals():
-    mqtt_client = None
+if "mqtt_connected" not in st.session_state:
+    st.session_state.mqtt_connected = False
 
-if "mqtt_thread" not in globals():
-    mqtt_thread = None
-
-if "mqtt_started" not in globals():
-    mqtt_started = False
-
-if "mqtt_connected" not in globals():
-    mqtt_connected = False
-
-if "last_data" not in globals():
-    last_data = {
+if "last_data" not in st.session_state:
+    st.session_state.last_data = {
         "temperature": None,
         "humidity": None,
         "tempSeuil": None,
@@ -52,9 +44,8 @@ if "last_data" not in globals():
         "last_update": None,
     }
 
-if "data_history" not in globals():
-    # Chaque entrée : {"time": datetime, "temperature":..., "humidity":..., "flame":..., "pot":...}
-    data_history = []
+if "data_history" not in st.session_state:
+    st.session_state.data_history = []
 
 
 # ==========================
@@ -62,27 +53,23 @@ if "data_history" not in globals():
 # ==========================
 
 def on_connect(client, userdata, flags, rc):
-    global mqtt_connected
     print("on_connect rc =", rc)
     if rc == 0:
-        mqtt_connected = True
+        st.session_state.mqtt_connected = True
         print("✅ Connecté au broker MQTT, abonné à", TOPIC_DATA)
         client.subscribe(TOPIC_DATA)
     else:
-        mqtt_connected = False
+        st.session_state.mqtt_connected = False
         print("❌ Erreur de connexion MQTT")
 
 
 def on_disconnect(client, userdata, rc):
-    global mqtt_connected
-    mqtt_connected = False
+    st.session_state.mqtt_connected = False
     print("🔌 Déconnecté du broker MQTT (rc =", rc, ")")
 
 
 def on_message(client, userdata, msg):
     """Réception des messages JSON de l’ESP32."""
-    global last_data, data_history
-
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
         print("MQTT message reçu sur", msg.topic, ":", payload)
@@ -90,36 +77,38 @@ def on_message(client, userdata, msg):
         print("JSON invalide :", e)
         return
 
+    d = st.session_state.last_data
+
     # Mise à jour du dernier état
-    last_data["temperature"] = payload.get("temperature")
-    last_data["humidity"] = payload.get("humidity")
-    last_data["tempSeuil"] = payload.get("tempSeuil")
-    last_data["humSeuil"] = payload.get("humSeuil")
-    last_data["flame"] = payload.get("flame")
-    last_data["flameRaw"] = payload.get("flameRaw")
-    last_data["pot"] = payload.get("pot")
-    last_data["seuilPot"] = payload.get("seuilPot")
-    last_data["alarm"] = payload.get("alarm")
-    last_data["last_update"] = datetime.now()
+    d["temperature"] = payload.get("temperature")
+    d["humidity"]    = payload.get("humidity")
+    d["tempSeuil"]   = payload.get("tempSeuil")
+    d["humSeuil"]    = payload.get("humSeuil")
+    d["flame"]       = payload.get("flame")
+    d["flameRaw"]    = payload.get("flameRaw")
+    d["pot"]         = payload.get("pot")
+    d["seuilPot"]    = payload.get("seuilPot")
+    d["alarm"]       = payload.get("alarm")
+    d["last_update"] = datetime.now()
 
     # Historique pour les graphes
-    data_history.append({
-        "time": last_data["last_update"],
-        "temperature": last_data["temperature"],
-        "humidity": last_data["humidity"],
-        "flame": last_data["flame"],
-        "pot": last_data["pot"],
+    st.session_state.data_history.append({
+        "time": d["last_update"],
+        "temperature": d["temperature"],
+        "humidity": d["humidity"],
+        "flame": d["flame"],
+        "pot": d["pot"],
     })
 
     # Sauvegarde CSV automatique (optionnel)
     try:
         with open("historique_mesures.csv", "a", encoding="utf-8") as f:
             line = (
-                f"{last_data['last_update']};"
-                f"{last_data['temperature']};"
-                f"{last_data['humidity']};"
-                f"{last_data['flame']};"
-                f"{last_data['pot']}\n"
+                f"{d['last_update']};"
+                f"{d['temperature']};"
+                f"{d['humidity']};"
+                f"{d['flame']};"
+                f"{d['pot']}\n"
             )
             f.write(line)
     except Exception as e:
@@ -130,32 +119,24 @@ def on_message(client, userdata, msg):
 # DÉMARRAGE CLIENT MQTT
 # ==========================
 
-def start_mqtt():
-    """Lance le client MQTT dans un thread séparé (une seule fois)."""
-    global mqtt_client, mqtt_thread, mqtt_started
+def ensure_mqtt_client():
+    """Crée et démarre le client MQTT UNE SEULE FOIS."""
+    if st.session_state.mqtt_client is not None:
+        return
 
-    if mqtt_started:
-        return  # déjà lancé
+    client = mqtt.Client()
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_message = on_message
 
-    mqtt_client = mqtt.Client()
-    mqtt_client.on_connect = on_connect
-    mqtt_client.on_disconnect = on_disconnect
-    mqtt_client.on_message = on_message
+    try:
+        print("🔁 Tentative de connexion au broker MQTT...")
+        client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        client.loop_start()  # thread réseau interne à paho
+    except Exception as e:
+        print("⚠️ Erreur de connexion MQTT :", e)
 
-    def _mqtt_loop():
-        while True:
-            try:
-                if not mqtt_connected:
-                    print("🔁 Tentative de connexion au broker MQTT...")
-                    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-                mqtt_client.loop_forever()
-            except Exception as e:
-                print("⚠️ Erreur dans la boucle MQTT :", e)
-                time.sleep(5)
-
-    mqtt_thread = threading.Thread(target=_mqtt_loop, daemon=True)
-    mqtt_thread.start()
-    mqtt_started = True
+    st.session_state.mqtt_client = client
 
 
 # ==========================
@@ -168,44 +149,25 @@ def build_dashboard():
         layout="wide",
     )
 
-    # --------- CSS : fond, cartes, logo clignotant ---------
+    # --------- CSS ---------
     st.markdown(
         """
         <style>
-        /* Fond global plus clair */
         .stApp {
             background: radial-gradient(circle at top left, #f5f0ff 0, #dbe2ff 35%, #c8d9ff 65%, #b8d3ff 100%);
             color: #0f172a;
         }
-
-        /* Cartes / blocs Streamlit */
-        .stAlert, .stMetric, .st-emotion-cache-16idsys, .st-emotion-cache-1r6slb0 {
-            border-radius: 12px !important;
-            padding: 0.75rem 1.25rem !important;
-        }
-
-        /* Bandeau MQTT */
-        .st-emotion-cache-1avcm0n {
-            border-radius: 14px !important;
-        }
-
-        /* Titre principal */
         h1 {
             color: #0f172a;
             font-weight: 800;
         }
-
-        /* Sous-titres */
         h2, h3 {
             color: #111827;
             font-weight: 700;
         }
-
-        /* Logo EPHEC clignotant léger */
         .ephec-logo {
             animation: pulse-logo 2s infinite;
         }
-
         @keyframes pulse-logo {
             0%   { opacity: 0.35; transform: translateY(0px); }
             50%  { opacity: 1.0;  transform: translateY(-2px); }
@@ -236,41 +198,43 @@ def build_dashboard():
         )
 
     # --------- État MQTT ---------
-    if mqtt_connected:
+    if st.session_state.mqtt_connected:
         st.success("État MQTT : ✅ Connecté au broker MQTT")
     else:
         st.error("État MQTT : 🔴 Déconnecté du broker MQTT")
 
     st.markdown("---")
 
+    d = st.session_state.last_data
+
     # --------- 4 cartes principales ---------
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
         st.subheader("🌡️ Température")
-        if last_data["temperature"] is not None:
-            st.metric("Température (°C)", f"{last_data['temperature']:.1f}")
+        if d["temperature"] is not None:
+            st.metric("Température (°C)", f"{d['temperature']:.1f}")
         else:
             st.write("—")
 
     with c2:
         st.subheader("💧 Humidité")
-        if last_data["humidity"] is not None:
-            st.metric("Humidité (%)", f"{last_data['humidity']:.1f}")
+        if d["humidity"] is not None:
+            st.metric("Humidité (%)", f"{d['humidity']:.1f}")
         else:
             st.write("—")
 
     with c3:
         st.subheader("📦 Température du seuil (ESP32)")
-        if last_data["seuilPot"] is not None:
-            st.metric("Seuil T (°C)", f"{last_data['seuilPot']:.1f}")
+        if d["seuilPot"] is not None:
+            st.metric("Seuil T (°C)", f"{d['seuilPot']:.1f}")
         else:
             st.write("Seuil T consigne : Aucun °C")
 
     with c4:
         st.subheader("🕹️ Potentiomètre → Seuil")
-        if last_data["pot"] is not None:
-            st.metric("Valeur brute POT", f"{last_data['pot']}")
+        if d["pot"] is not None:
+            st.metric("Valeur brute POT", f"{d['pot']}")
         else:
             st.write("Valeur brute POT : Aucun")
 
@@ -281,7 +245,7 @@ def build_dashboard():
 
     with c5:
         st.subheader("🔥 IR / Flamme")
-        flame = last_data["flame"]
+        flame = d["flame"]
         if flame is None:
             st.info("En attente de données (flame = None)...")
         elif flame == 1:
@@ -291,27 +255,26 @@ def build_dashboard():
 
     with c6:
         st.subheader("🚨 État de l'alarme")
-        if last_data["alarm"]:
+        if d["alarm"]:
             st.error("Alarme ACTIVE")
         else:
             st.success("Alarme inactive")
 
     st.markdown("---")
 
-    # --------- Graphiques en temps réel (EN BÂTONNETS) ---------
+    # --------- Graphiques en temps réel (barres/tiges) ---------
     st.subheader("📊 Graphiques en temps réel")
 
-    if len(data_history) == 0:
+    hist = st.session_state.data_history
+
+    if len(hist) == 0:
         st.info("En attente de données temps réel des capteurs…")
     else:
-        df = pd.DataFrame(data_history)
-
-        # On limite aux 100 derniers points pour que les barres restent lisibles
-        df = df.tail(100)
+        df = pd.DataFrame(hist).tail(100)  # 100 derniers points
 
         col_g1, col_g2 = st.columns(2)
 
-        # --- Température (barres) ---
+        # Température (barres)
         with col_g1:
             temp_chart = (
                 alt.Chart(df)
@@ -325,7 +288,7 @@ def build_dashboard():
             )
             st.altair_chart(temp_chart, use_container_width=True)
 
-        # --- Humidité (barres) ---
+        # Humidité (barres)
         with col_g2:
             hum_chart = (
                 alt.Chart(df)
@@ -341,7 +304,7 @@ def build_dashboard():
 
         col_g3, col_g4 = st.columns(2)
 
-        # --- Flamme (0/1, barres) ---
+        # Flamme (barres)
         with col_g3:
             flame_chart = (
                 alt.Chart(df)
@@ -355,7 +318,7 @@ def build_dashboard():
             )
             st.altair_chart(flame_chart, use_container_width=True)
 
-        # --- Potentiomètre (barres) ---
+        # Potentiomètre (barres)
         with col_g4:
             pot_chart = (
                 alt.Chart(df)
@@ -378,15 +341,14 @@ def build_dashboard():
 
     with col_d1:
         st.write("**Dernier message JSON reçu :**")
-        st.json(last_data)
+        st.json(d)
 
     with col_d2:
         st.write("**Outils :**")
         if st.button("🗑️ Réinitialiser l’historique"):
-            data_history.clear()
+            st.session_state.data_history.clear()
             st.success("Historique effacé (la prochaine mesure remplira à nouveau les graphiques).")
 
-        # Téléchargement CSV (si le fichier existe)
         try:
             with open("historique_mesures.csv", "r", encoding="utf-8") as f:
                 csv_content = f.read()
@@ -399,8 +361,8 @@ def build_dashboard():
         except FileNotFoundError:
             st.info("Aucun fichier CSV encore créé (attends la première mesure).")
 
-    if last_data["last_update"] is not None:
-        st.caption(f"Dernière mise à jour : {last_data['last_update']}")
+    if d["last_update"] is not None:
+        st.caption(f"Dernière mise à jour : {d['last_update']}")
     else:
         st.caption("Aucune donnée reçue pour l’instant.")
 
@@ -410,8 +372,12 @@ def build_dashboard():
 # ==========================
 
 def main():
-    start_mqtt()
+    ensure_mqtt_client()
     build_dashboard()
+
+    # Rafraîchissement automatique toutes les 1 s
+    time.sleep(1)
+    st.experimental_rerun()
 
 
 if __name__ == "__main__":
