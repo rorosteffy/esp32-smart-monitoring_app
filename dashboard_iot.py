@@ -1,53 +1,41 @@
-# dashboard_iot.py
-# ✅ Streamlit Cloud + Local
-# ✅ MQTT stable (1 seul client, pas de fuite "too many open files")
-# ✅ Données temps réel (courbes)
-# ✅ Lit correctement la clé ESP32: "seuil"
-# ✅ Boutons LED ON/OFF vers ta binôme: topic "noeud/operateur/cmd"
-# ✅ SANS streamlit_autorefresh
-
-import os
-import time
+import streamlit as st
+import paho.mqtt.client as mqtt
 import json
-import socket
 import threading
+import time
 from datetime import datetime
 from collections import deque
-
-import streamlit as st
 import pandas as pd
 import altair as alt
-import paho.mqtt.client as mqtt
+import os
+import socket
 
 # ==========================
-# CONFIG MQTT
+# MQTT CONFIG (par défaut)
 # ==========================
-MQTT_BROKER = "51.103.239.173"
-MQTT_PORT = 1883
-
-TOPIC_DATA = "capteur/data"            # ESP32 -> JSON
-TOPIC_CMD  = "noeud/operateur/cmd"     # Streamlit -> commandes binôme (LED)
+DEFAULT_BROKER = "51.103.239.173"
+DEFAULT_PORT = 1883
+DEFAULT_TRANSPORT = "tcp"   # "tcp" ou "websockets"
+DEFAULT_TOPIC_DATA = "capteur/data"
+DEFAULT_TOPIC_CMD  = "noeud/operateur/cmd"
 
 CMD_LED_ON  = "LED_RED_ON"
 CMD_LED_OFF = "LED_RED_OFF"
 
 # ==========================
-# LOGO (optionnel)
+# UI CONFIG
 # ==========================
-LOGO_FILENAME = "LOGO_EPHEC_HE.png"
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
+st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
 
 # ==========================
-# ETAT PARTAGE (thread-safe)
+# THREAD-SAFE STATE
 # ==========================
 LOCK = threading.Lock()
-MQTT_CONNECTED = False
 
 LAST = {
     "temperature": None,
     "humidity": None,
-    "seuil": None,        # ✅ clé ESP32: "seuil"
+    "seuil": None,         # clé ESP32: "seuil"
     "flame": None,
     "flameHande": None,
     "alarm": None,
@@ -58,54 +46,68 @@ LAST = {
     "last_update": None,
 }
 
-HISTORY = deque(maxlen=500)  # 500 derniers points
+HISTORY = deque(maxlen=400)
+
+# Etat connexion (seulement info)
+MQTT_STATE = {
+    "connected": False,
+    "last_rc": None,
+    "last_err": None,
+    "last_change": None,
+}
+
+def now_ts():
+    return datetime.now()
 
 # ==========================
 # MQTT CALLBACKS
 # ==========================
 def on_connect(client, userdata, flags, rc):
-    global MQTT_CONNECTED
     with LOCK:
-        MQTT_CONNECTED = (rc == 0)
+        MQTT_STATE["connected"] = (rc == 0)
+        MQTT_STATE["last_rc"] = rc
+        MQTT_STATE["last_err"] = None
+        MQTT_STATE["last_change"] = now_ts()
 
     if rc == 0:
-        client.subscribe(TOPIC_DATA, qos=0)
-        print("✅ MQTT connecté, abonné à", TOPIC_DATA)
+        client.subscribe(userdata["topic_data"])
+        # print utile dans logs Streamlit Cloud
+        print("✅ MQTT connecté, abonné à", userdata["topic_data"])
     else:
-        print("❌ MQTT erreur connexion rc =", rc)
+        print("❌ MQTT connexion rc =", rc)
 
 def on_disconnect(client, userdata, rc):
-    global MQTT_CONNECTED
     with LOCK:
-        MQTT_CONNECTED = False
+        MQTT_STATE["connected"] = False
+        MQTT_STATE["last_rc"] = rc
+        MQTT_STATE["last_change"] = now_ts()
     print("🔌 MQTT déconnecté rc =", rc)
 
 def on_message(client, userdata, msg):
-    global LAST, HISTORY
     try:
-        payload = json.loads(msg.payload.decode("utf-8"))
+        payload = json.loads(msg.payload.decode("utf-8", errors="ignore"))
     except Exception as e:
-        print("JSON invalide :", e, "payload=", msg.payload[:80])
+        print("JSON invalide:", e)
         return
 
-    now = datetime.now()
+    t = now_ts()
 
-    # ✅ Ton ESP32 (code C++) publie: temperature, humidity, seuil, flame, flameHande, alarm...
+    # Ton ESP32 publie : temperature, humidity, seuil, flame, flameHande, alarm...
     with LOCK:
-        LAST["temperature"]  = payload.get("temperature")
-        LAST["humidity"]     = payload.get("humidity")
-        LAST["seuil"]        = payload.get("seuil")        # ✅ IMPORTANT
-        LAST["flame"]        = payload.get("flame")
-        LAST["flameHande"]   = payload.get("flameHande")
-        LAST["alarm"]        = payload.get("alarm")
-        LAST["alarmLocal"]   = payload.get("alarmLocal")
-        LAST["muted"]        = payload.get("muted")
-        LAST["motorForced"]  = payload.get("motorForced")
-        LAST["motorSpeed"]   = payload.get("motorSpeed")
-        LAST["last_update"]  = now
+        LAST["temperature"] = payload.get("temperature")
+        LAST["humidity"] = payload.get("humidity")
+        LAST["seuil"] = payload.get("seuil")  # IMPORTANT
+        LAST["flame"] = payload.get("flame")
+        LAST["flameHande"] = payload.get("flameHande")
+        LAST["alarm"] = payload.get("alarm")
+        LAST["alarmLocal"] = payload.get("alarmLocal")
+        LAST["muted"] = payload.get("muted")
+        LAST["motorForced"] = payload.get("motorForced")
+        LAST["motorSpeed"] = payload.get("motorSpeed")
+        LAST["last_update"] = t
 
         HISTORY.append({
-            "time": now,
+            "time": t,
             "temperature": LAST["temperature"],
             "humidity": LAST["humidity"],
             "seuil": LAST["seuil"],
@@ -113,49 +115,53 @@ def on_message(client, userdata, msg):
         })
 
 # ==========================
-# MQTT CLIENT (1 seule fois)
+# MQTT INIT (1 seule fois)
 # ==========================
 @st.cache_resource
-def init_mqtt_client():
+def mqtt_start(broker: str, port: int, transport: str, topic_data: str, topic_cmd: str):
     """
-    Cache Streamlit => 1 seul client MQTT par process.
-    IMPORTANT: pas de st.session_state dans callbacks (thread).
+    Démarre MQTT une seule fois (cache_resource).
+    Si Streamlit rerun, le client reste le même.
     """
     cid = f"streamlit_{socket.gethostname()}_{os.getpid()}"
-    client = mqtt.Client(client_id=cid, protocol=mqtt.MQTTv311)
+    client = mqtt.Client(client_id=cid, protocol=mqtt.MQTTv311, userdata={
+        "topic_data": topic_data,
+        "topic_cmd": topic_cmd
+    })
 
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
 
-    # Reconnexion auto (paho gère ça avec loop_start + connect_async)
-    client.reconnect_delay_set(min_delay=1, max_delay=10)
+    # websockets option (si ton broker offre 9001 par ex)
+    if transport == "websockets":
+        client.transport = "websockets"
 
-    client.connect_async(MQTT_BROKER, MQTT_PORT, keepalive=60)
-    client.loop_start()
+    try:
+        client.connect_async(broker, port, keepalive=60)
+        client.loop_start()
+        with LOCK:
+            MQTT_STATE["last_err"] = None
+            MQTT_STATE["last_change"] = now_ts()
+    except Exception as e:
+        with LOCK:
+            MQTT_STATE["connected"] = False
+            MQTT_STATE["last_err"] = str(e)
+            MQTT_STATE["last_change"] = now_ts()
+
     return client
 
-def mqtt_publish(cmd: str):
-    client = init_mqtt_client()
+def mqtt_publish(client: mqtt.Client, topic_cmd: str, cmd: str):
     try:
-        client.publish(TOPIC_CMD, cmd, qos=0, retain=False)
+        client.publish(topic_cmd, cmd, qos=0, retain=False)
+        st.toast(f"✅ Envoyé: {cmd}", icon="📡")
     except Exception as e:
-        st.error(f"Erreur publish MQTT: {e}")
+        st.error(f"Publish MQTT impossible: {e}")
 
 # ==========================
-# UI helpers
+# CHARTS
 # ==========================
-def metric_value(v, fmt="{:.1f}"):
-    if v is None:
-        return "—"
-    if isinstance(v, (int, float)):
-        try:
-            return fmt.format(float(v))
-        except Exception:
-            return str(v)
-    return str(v)
-
-def build_line_chart(df: pd.DataFrame, y: str, title: str, ytitle: str):
+def line_chart(df: pd.DataFrame, y: str, title: str, ytitle: str):
     return (
         alt.Chart(df)
         .mark_line(point=True)
@@ -167,178 +173,196 @@ def build_line_chart(df: pd.DataFrame, y: str, title: str, ytitle: str):
         .properties(height=260, title=title)
     )
 
-def safe_rerun():
-    # compat Streamlit versions
-    if hasattr(st, "rerun"):
-        st.rerun()
-    else:
-        st.experimental_rerun()
+def fmt_metric(v, fmt="{:.1f}"):
+    if v is None:
+        return "—"
+    try:
+        if isinstance(v, (int, float)):
+            return fmt.format(v)
+        return str(v)
+    except:
+        return "—"
 
 # ==========================
-# MAIN
+# SIDEBAR CONFIG (Cloud-friendly)
 # ==========================
-def main():
-    st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
+st.sidebar.title("⚙️ Connexion MQTT (Cloud)")
+broker = st.sidebar.text_input("Broker", DEFAULT_BROKER)
+transport = st.sidebar.selectbox("Transport", ["tcp", "websockets"], index=0)
+port = st.sidebar.number_input("Port", min_value=1, max_value=65535, value=(9001 if transport=="websockets" else DEFAULT_PORT), step=1)
 
-    # démarre MQTT (une seule fois)
-    init_mqtt_client()
+topic_data = st.sidebar.text_input("Topic DATA (ESP32 →)", DEFAULT_TOPIC_DATA)
+topic_cmd  = st.sidebar.text_input("Topic CMD (Streamlit →)", DEFAULT_TOPIC_CMD)
 
-    # CSS
-    st.markdown("""
-    <style>
-      .stApp {
-        background: radial-gradient(circle at top left, #f5f0ff 0, #dbe2ff 35%, #c8d9ff 65%, #b8d3ff 100%);
-      }
-      h1 { font-weight: 800; }
-    </style>
-    """, unsafe_allow_html=True)
+refresh_s = st.sidebar.slider("Rafraîchissement UI (secondes)", 1, 10, 2)
 
-    # Header
-    col_logo, col_title = st.columns([1, 6])
-    with col_logo:
-        if os.path.exists(LOGO_PATH):
-            st.image(LOGO_PATH, width=120)
-        else:
-            st.write("EPHEC")
-    with col_title:
-        st.title("Gestion Intelligente Température & Sécurité – IoT")
+st.sidebar.caption("💡 Si Cloud ne reçoit rien en TCP 1883, essaie WebSockets + port 9001 (si ton broker l’a).")
 
-    # Snapshot thread-safe
-    with LOCK:
-        last = dict(LAST)
-        hist = list(HISTORY)
-        connected = MQTT_CONNECTED
+# Start MQTT once
+client = mqtt_start(broker, int(port), transport, topic_data, topic_cmd)
 
-    # Data freshness (si data reçue < 8s => OK)
-    fresh = False
-    age_s = None
-    if last["last_update"] is not None:
-        age_s = (datetime.now() - last["last_update"]).total_seconds()
-        fresh = (age_s <= 8.0)
+# ==========================
+# HEADER
+# ==========================
+st.markdown("""
+<style>
+  .stApp { background: radial-gradient(circle at top left, #f5f0ff 0, #dbe2ff 35%, #c8d9ff 65%, #b8d3ff 100%); }
+</style>
+""", unsafe_allow_html=True)
 
-    # Etat MQTT (évite faux "déconnecté")
-    if connected or fresh:
-        st.success("État MQTT : ✅ Connecté (ou données reçues récemment)")
+st.title("Gestion Intelligente Température & Sécurité – IoT")
+
+# Snapshot
+with LOCK:
+    last = dict(LAST)
+    hist = list(HISTORY)
+    mqtt_state = dict(MQTT_STATE)
+
+# Freshness
+fresh = False
+age_s = None
+if last["last_update"] is not None:
+    age_s = (datetime.now() - last["last_update"]).total_seconds()
+    fresh = (age_s <= 8.0)
+
+# MQTT status (pas de faux négatif)
+if mqtt_state["connected"] or fresh:
+    st.success("État MQTT : ✅ Connecté (ou données reçues récemment)")
+else:
+    st.error("État MQTT : 🔴 Déconnecté / aucune donnée récente")
+
+cols = st.columns(3)
+with cols[0]:
+    st.caption(f"rc: {mqtt_state.get('last_rc')}")
+with cols[1]:
+    st.caption(f"Erreur: {mqtt_state.get('last_err')}")
+with cols[2]:
+    if age_s is None:
+        st.caption("Dernière donnée: —")
     else:
-        st.error("État MQTT : 🔴 Déconnecté / aucune donnée récente")
+        st.caption(f"Dernière donnée: ~{age_s:.1f}s")
 
-    if age_s is not None:
-        st.caption(f"Dernière donnée reçue il y a ~{age_s:.1f} s")
+st.divider()
 
-    st.markdown("---")
-
-    # Cartes
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.subheader("🌡️ Température")
-        st.metric("Temp (°C)", metric_value(last["temperature"]))
-    with c2:
-        st.subheader("💧 Humidité")
-        st.metric("Hum (%)", metric_value(last["humidity"], "{:.0f}"))
-    with c3:
-        st.subheader("📦 Seuil (ESP32)")
-        st.metric("Seuil (°C)", "— (non reçu)" if last["seuil"] is None else f"{float(last['seuil']):.1f}")
-    with c4:
-        st.subheader("🚨 Alarme")
-        if last["alarm"] is True:
-            st.error("Alarme ACTIVE")
-        else:
-            st.success("Alarme inactive")
-
-    st.markdown("---")
-
-    # Flamme
-    c5, c6 = st.columns(2)
-    with c5:
-        st.subheader("🔥 Flamme (Steffy)")
-        if last["flame"] is None:
-            st.info("En attente (flame=None)")
-        elif int(last["flame"]) == 1:
-            st.error("🔥 Feu détecté (flame=1)")
-        else:
-            st.success("✅ Aucun feu (flame=0)")
-
-    with c6:
-        st.subheader("🔥 Flamme binôme (Hande)")
-        fh = last["flameHande"]
-        if fh is None:
-            st.info("En attente (flameHande=None)")
-        elif int(fh) == 1:
-            st.warning("⚠️ Flamme chez la binôme (flameHande=1)")
-        else:
-            st.success("✅ Pas de flamme chez la binôme (flameHande=0)")
-
-    st.markdown("---")
-
-    # Commandes binôme
-    st.subheader(f"🎛️ Commandes vers la binôme (topic: {TOPIC_CMD})")
-    b1, b2, b3 = st.columns([1, 1, 3])
-    with b1:
-        if st.button("🔴 LED ROUGE ON", use_container_width=True):
-            mqtt_publish(CMD_LED_ON)
-            st.toast("Commande envoyée", icon="📡")
-    with b2:
-        if st.button("⚫ LED ROUGE OFF", use_container_width=True):
-            mqtt_publish(CMD_LED_OFF)
-            st.toast("Commande envoyée", icon="📡")
-    with b3:
-        st.info("La binôme doit écouter ce topic et exécuter LED_RED_ON / LED_RED_OFF sur son ESP32.")
-
-    st.markdown("---")
-
-    # Graphiques (courbes)
-    st.subheader("📈 Graphiques en temps réel (courbes)")
-    if len(hist) == 0:
-        st.info("En attente de données sur capteur/data…")
+# ==========================
+# METRICS
+# ==========================
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.subheader("🌡️ Température")
+    st.metric("Temp (°C)", fmt_metric(last["temperature"]))
+with c2:
+    st.subheader("💧 Humidité")
+    st.metric("Hum (%)", fmt_metric(last["humidity"], "{:.0f}"))
+with c3:
+    st.subheader("📦 Seuil (ESP32)")
+    if last["seuil"] is None:
+        st.metric("Seuil (°C)", "— (non reçu)")
     else:
-        df = pd.DataFrame(hist).dropna(subset=["time"]).tail(250)
+        st.metric("Seuil (°C)", f"{float(last['seuil']):.1f}")
+with c4:
+    st.subheader("🚨 Alarme")
+    if last["alarm"] is True:
+        st.error("Alarme ACTIVE")
+    else:
+        st.success("Alarme inactive")
 
-        g1, g2 = st.columns(2)
-        with g1:
-            st.altair_chart(build_line_chart(df, "temperature", "Température", "Température (°C)"),
-                            use_container_width=True)
-        with g2:
-            st.altair_chart(build_line_chart(df, "humidity", "Humidité", "Humidité (%)"),
-                            use_container_width=True)
+st.divider()
 
-        g3, g4 = st.columns(2)
-        with g3:
-            st.altair_chart(build_line_chart(df, "seuil", "Seuil (ESP32)", "Seuil (°C)"),
-                            use_container_width=True)
-        with g4:
-            st.altair_chart(build_line_chart(df, "flame", "Flamme", "Flamme (0/1)"),
-                            use_container_width=True)
+# ==========================
+# FLAME STATUS
+# ==========================
+f1, f2 = st.columns(2)
+with f1:
+    st.subheader("🔥 Flamme (Steffy)")
+    if last["flame"] is None:
+        st.info("En attente (flame=None)")
+    elif int(last["flame"]) == 1:
+        st.error("🔥 Feu détecté (flame=1)")
+    else:
+        st.success("✅ Aucun feu (flame=0)")
 
-    st.markdown("---")
+with f2:
+    st.subheader("🔥 Flamme binôme (Hande)")
+    fh = last["flameHande"]
+    if fh is None:
+        st.info("En attente (flameHande=None)")
+    elif int(fh) == 1:
+        st.warning("⚠️ Flamme chez la binôme (flameHande=1)")
+    else:
+        st.success("✅ Pas de flamme chez la binôme (flameHande=0)")
 
-    # Diagnostic + CSV (sans écrire fichier)
-    st.subheader("🩺 Diagnostic")
-    d1, d2 = st.columns(2)
-    with d1:
-        st.write("Dernier JSON interprété :")
-        st.json(last)
+st.divider()
 
-    with d2:
-        if st.button("🗑️ Effacer l'historique"):
-            with LOCK:
-                HISTORY.clear()
-            st.success("Historique effacé.")
+# ==========================
+# COMMANDS
+# ==========================
+st.subheader(f"🎛️ Commandes vers la binôme (topic: `{topic_cmd}`)")
+b1, b2, b3 = st.columns([1, 1, 3])
+with b1:
+    if st.button("🔴 LED ROUGE ON", use_container_width=True):
+        mqtt_publish(client, topic_cmd, CMD_LED_ON)
+with b2:
+    if st.button("⚫ LED ROUGE OFF", use_container_width=True):
+        mqtt_publish(client, topic_cmd, CMD_LED_OFF)
+with b3:
+    st.info("Ta binôme doit SUBSCRIBE à `noeud/operateur/cmd` et exécuter LED_RED_ON / LED_RED_OFF.")
 
-        if len(hist) > 0:
-            df_all = pd.DataFrame(hist)
-            csv_data = df_all.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "💾 Télécharger l’historique CSV",
-                data=csv_data,
-                file_name="historique_mesures.csv",
-                mime="text/csv",
-            )
+st.divider()
 
-    # Refresh UI (sans casser MQTT)
-    st.sidebar.markdown("### 🔄 Rafraîchissement")
-    refresh_s = st.sidebar.slider("Refresh UI (secondes)", 1, 10, 2)
-    time.sleep(refresh_s)
-    safe_rerun()
+# ==========================
+# REALTIME CURVES
+# ==========================
+st.subheader("📈 Graphiques en temps réel (courbes)")
+if len(hist) == 0:
+    st.info(f"En attente de données sur `{topic_data}`…")
+else:
+    df = pd.DataFrame(hist).dropna(subset=["time"]).tail(200)
 
-if __name__ == "__main__":
-    main()
+    g1, g2 = st.columns(2)
+    with g1:
+        st.altair_chart(line_chart(df, "temperature", "Température", "Température (°C)"),
+                        use_container_width=True)
+    with g2:
+        st.altair_chart(line_chart(df, "humidity", "Humidité", "Humidité (%)"),
+                        use_container_width=True)
+
+    g3, g4 = st.columns(2)
+    with g3:
+        st.altair_chart(line_chart(df, "seuil", "Seuil", "Seuil (°C)"),
+                        use_container_width=True)
+    with g4:
+        st.altair_chart(line_chart(df, "flame", "Flamme", "Flamme (0/1)"),
+                        use_container_width=True)
+
+st.divider()
+
+# ==========================
+# DIAGNOSTIC + CSV DOWNLOAD
+# ==========================
+d1, d2 = st.columns(2)
+with d1:
+    st.subheader("🩺 Dernier JSON")
+    st.json(last)
+
+with d2:
+    st.subheader("📁 Outils")
+    if st.button("🗑️ Effacer l'historique"):
+        with LOCK:
+            HISTORY.clear()
+        st.success("Historique effacé")
+
+    if len(hist) > 0:
+        df_all = pd.DataFrame(hist)
+        st.download_button(
+            "💾 Télécharger l’historique CSV",
+            data=df_all.to_csv(index=False).encode("utf-8"),
+            file_name="historique_mesures.csv",
+            mime="text/csv",
+        )
+
+# ==========================
+# AUTO-REFRESH SANS MODULE EXTERNE
+# ==========================
+time.sleep(refresh_s)
+st.rerun()
