@@ -1,9 +1,8 @@
 # dashboard_iot.py
-# Streamlit Cloud compatible
-# - MQTT WebSockets (9001) OU WSS (443 via NGINX)
-# - 1 seul client MQTT (cache_resource)
-# - UI refresh sans casser MQTT
-# - Diagnostic clair (rc, logs)
+# ✅ Streamlit Cloud compatible (MQTT WebSockets)
+# ✅ 1 seul client MQTT (cache_resource)
+# ✅ Données temps réel + historique
+# ✅ Boutons publish vers topic cmd
 
 import os
 import time
@@ -19,25 +18,18 @@ import altair as alt
 import paho.mqtt.client as mqtt
 
 # ==========================
-# CHOISIS TON MODE ICI
+# CONFIG (modifiable via variables d'environnement Streamlit)
 # ==========================
-# MODE = "WS9001"  -> ws://IP:9001
-# MODE = "WSS443"  -> wss://DOMAINE:443/mqtt  (via nginx)
-MODE = "WS9001"
+MQTT_BROKER = os.getenv("MQTT_BROKER", "51.103.239.173")
+MQTT_PORT   = int(os.getenv("MQTT_PORT", "9001"))  # ✅ WebSocket port
+MQTT_WS_PATH = os.getenv("MQTT_WS_PATH", "/")      # "/" pour mosquitto websockets standard
 
-MQTT_BROKER_IP = "51.103.239.173"   # ta VM
-MQTT_BROKER_DOMAIN = "TON_DOMAINE.com"  # si WSS443 (ex: mqtt.mondomaine.com)
-MQTT_WS_PATH = "/mqtt"  # nginx location /mqtt (uniquement en WSS443)
-
-TOPIC_DATA = "capteur/data"            # ESP32 -> JSON
-TOPIC_CMD  = "noeud/operateur/cmd"     # Streamlit -> commandes binôme
+TOPIC_DATA = os.getenv("TOPIC_DATA", "capteur/data")
+TOPIC_CMD  = os.getenv("TOPIC_CMD",  "noeud/operateur/cmd")
 
 CMD_LED_ON  = "LED_RED_ON"
 CMD_LED_OFF = "LED_RED_OFF"
 
-# ==========================
-# LOGO (optionnel)
-# ==========================
 LOGO_FILENAME = "LOGO_EPHEC_HE.png"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
@@ -57,10 +49,6 @@ LAST = {
     "flame": None,
     "flameHande": None,
     "alarm": None,
-    "alarmLocal": None,
-    "muted": None,
-    "motorForced": None,
-    "motorSpeed": None,
     "last_update": None,
 }
 HISTORY = deque(maxlen=500)
@@ -92,27 +80,21 @@ def on_disconnect(client, userdata, rc):
     print("🔌 MQTT déconnecté rc =", rc)
 
 def on_message(client, userdata, msg):
-    global LAST, HISTORY
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
     except Exception as e:
-        print("JSON invalide :", e, "payload=", msg.payload[:120])
+        print("JSON invalide:", e, "payload=", msg.payload[:120])
         return
 
     now = datetime.now()
-
     with LOCK:
-        LAST["temperature"]  = payload.get("temperature")
-        LAST["humidity"]     = payload.get("humidity")
-        LAST["seuil"]        = payload.get("seuil")
-        LAST["flame"]        = payload.get("flame")
-        LAST["flameHande"]   = payload.get("flameHande")
-        LAST["alarm"]        = payload.get("alarm")
-        LAST["alarmLocal"]   = payload.get("alarmLocal")
-        LAST["muted"]        = payload.get("muted")
-        LAST["motorForced"]  = payload.get("motorForced")
-        LAST["motorSpeed"]   = payload.get("motorSpeed")
-        LAST["last_update"]  = now
+        LAST["temperature"] = payload.get("temperature")
+        LAST["humidity"]    = payload.get("humidity")
+        LAST["seuil"]       = payload.get("seuil")
+        LAST["flame"]       = payload.get("flame")
+        LAST["flameHande"]  = payload.get("flameHande")
+        LAST["alarm"]       = payload.get("alarm")
+        LAST["last_update"] = now
 
         HISTORY.append({
             "time": now,
@@ -123,33 +105,15 @@ def on_message(client, userdata, msg):
         })
 
 # ==========================
-# INIT MQTT (UNE SEULE FOIS)
+# INIT MQTT (une seule fois)
 # ==========================
 @st.cache_resource
 def init_mqtt_client():
-    """
-    1 seul client MQTT par process streamlit.
-    WebSockets pour Streamlit Cloud.
-    """
     cid = f"streamlit_{socket.gethostname()}_{os.getpid()}"
 
-    if MODE == "WS9001":
-        # WebSocket non TLS
-        client = mqtt.Client(client_id=cid, protocol=mqtt.MQTTv311, transport="websockets")
-        broker = MQTT_BROKER_IP
-        port = 9001
-
-    elif MODE == "WSS443":
-        # WebSocket TLS via nginx (wss)
-        client = mqtt.Client(client_id=cid, protocol=mqtt.MQTTv311, transport="websockets")
-        broker = MQTT_BROKER_DOMAIN
-        port = 443
-        client.tls_set()  # active TLS
-        # important si nginx utilise path /mqtt
-        client.ws_set_options(path=MQTT_WS_PATH)
-
-    else:
-        raise ValueError("MODE invalide. Utilise WS9001 ou WSS443.")
+    # ✅ WebSockets (indispensable sur Streamlit Cloud)
+    client = mqtt.Client(client_id=cid, protocol=mqtt.MQTTv311, transport="websockets")
+    client.ws_set_options(path=MQTT_WS_PATH)
 
     client.on_log = on_log
     client.on_connect = on_connect
@@ -157,16 +121,13 @@ def init_mqtt_client():
     client.on_message = on_message
 
     client.reconnect_delay_set(min_delay=1, max_delay=10)
-    client.connect_async(broker, port, keepalive=60)
+    client.connect_async(MQTT_BROKER, MQTT_PORT, keepalive=60)
     client.loop_start()
     return client
 
 def mqtt_publish(cmd: str):
-    client = init_mqtt_client()
-    try:
-        client.publish(TOPIC_CMD, cmd, qos=0, retain=False)
-    except Exception as e:
-        st.error(f"Erreur publish MQTT: {e}")
+    c = init_mqtt_client()
+    c.publish(TOPIC_CMD, cmd, qos=0, retain=False)
 
 # ==========================
 # UI HELPERS
@@ -204,8 +165,6 @@ def safe_rerun():
 # ==========================
 def main():
     st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
-
-    # démarre MQTT
     init_mqtt_client()
 
     st.markdown("""
@@ -225,32 +184,29 @@ def main():
             st.write("EPHEC")
     with col_title:
         st.title("Gestion Intelligente Température & Sécurité – IoT")
-        st.caption(f"Mode MQTT : **{MODE}**")
+        st.caption(f"Broker: {MQTT_BROKER} | Port: {MQTT_PORT} | Topic: {TOPIC_DATA}")
 
-    # Snapshot thread-safe
     with LOCK:
         last = dict(LAST)
         hist = list(HISTORY)
         connected = MQTT_CONNECTED
-        last_rc = MQTT_LAST_RC
-        last_log = MQTT_LAST_LOG
+        rc = MQTT_LAST_RC
+        log = MQTT_LAST_LOG
 
-    # Freshness
     fresh = False
     age_s = None
     if last["last_update"] is not None:
         age_s = (datetime.now() - last["last_update"]).total_seconds()
         fresh = (age_s <= 8.0)
 
-    # Etat MQTT
     if connected or fresh:
         st.success("État MQTT : ✅ Connecté (ou données reçues récemment)")
     else:
         st.error("État MQTT : 🔴 Déconnecté / aucune donnée récente")
 
+    st.caption(f"MQTT rc={rc} | log: {log}")
     if age_s is not None:
         st.caption(f"Dernière donnée reçue il y a ~{age_s:.1f} s")
-    st.caption(f"MQTT rc: {last_rc} | Dernier log: {last_log}")
 
     st.markdown("---")
 
@@ -270,30 +226,8 @@ def main():
 
     st.markdown("---")
 
-    c5, c6 = st.columns(2)
-    with c5:
-        st.subheader("🔥 Flamme (Steffy)")
-        if last["flame"] is None:
-            st.info("En attente (flame=None)")
-        elif int(last["flame"]) == 1:
-            st.error("🔥 Feu détecté (flame=1)")
-        else:
-            st.success("✅ Aucun feu (flame=0)")
-
-    with c6:
-        st.subheader("🔥 Flamme binôme (Hande)")
-        fh = last["flameHande"]
-        if fh is None:
-            st.info("En attente (flameHande=None)")
-        elif int(fh) == 1:
-            st.warning("⚠️ Flamme chez la binôme (flameHande=1)")
-        else:
-            st.success("✅ Pas de flamme chez la binôme (flameHande=0)")
-
-    st.markdown("---")
-
-    st.subheader(f"🎛️ Commandes vers la binôme (topic: {TOPIC_CMD})")
-    b1, b2, b3 = st.columns([1, 1, 3])
+    st.subheader(f"🎛️ Commandes binôme (topic: {TOPIC_CMD})")
+    b1, b2 = st.columns(2)
     with b1:
         if st.button("🔴 LED ROUGE ON", use_container_width=True):
             mqtt_publish(CMD_LED_ON)
@@ -302,12 +236,10 @@ def main():
         if st.button("⚫ LED ROUGE OFF", use_container_width=True):
             mqtt_publish(CMD_LED_OFF)
             st.toast("Commande envoyée", icon="📡")
-    with b3:
-        st.info("La binôme doit écouter ce topic et exécuter LED_RED_ON / LED_RED_OFF sur son ESP32.")
 
     st.markdown("---")
 
-    st.subheader("📈 Graphiques en temps réel (courbes)")
+    st.subheader("📈 Graphiques temps réel")
     if len(hist) == 0:
         st.info("En attente de données sur capteur/data…")
     else:
@@ -330,32 +262,11 @@ def main():
                             use_container_width=True)
 
     st.markdown("---")
+    st.subheader("🩺 Dernier JSON reçu")
+    st.json(last)
 
-    st.subheader("🩺 Diagnostic")
-    d1, d2 = st.columns(2)
-    with d1:
-        st.write("Dernier JSON interprété :")
-        st.json(last)
-
-    with d2:
-        if st.button("🗑️ Effacer l'historique"):
-            with LOCK:
-                HISTORY.clear()
-            st.success("Historique effacé.")
-
-        if len(hist) > 0:
-            df_all = pd.DataFrame(hist)
-            csv_data = df_all.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "💾 Télécharger l’historique CSV",
-                data=csv_data,
-                file_name="historique_mesures.csv",
-                mime="text/csv",
-            )
-
-    # Refresh UI
-    st.sidebar.markdown("### 🔄 Rafraîchissement")
-    refresh_s = st.sidebar.slider("Refresh UI (secondes)", 1, 10, 2)
+    st.sidebar.markdown("### 🔄 Rafraîchissement UI")
+    refresh_s = st.sidebar.slider("Secondes", 1, 10, 2)
     time.sleep(refresh_s)
     safe_rerun()
 
