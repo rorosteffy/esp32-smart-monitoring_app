@@ -7,7 +7,6 @@ from datetime import datetime
 from collections import deque
 import pandas as pd
 import altair as alt
-import os
 
 # ==========================
 # MQTT CONFIG
@@ -17,7 +16,7 @@ MQTT_PORT = 1883
 TOPIC_DATA = "capteur/data"
 
 # ==========================
-# MQTT BRIDGE (STABLE)
+# MQTT BRIDGE
 # ==========================
 class MqttBridge:
     def __init__(self):
@@ -75,16 +74,19 @@ def get_bridge():
 # ==========================
 # PAGE CONFIG
 # ==========================
-st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
+st.set_page_config(
+    page_title="Dashboard IoT EPHEC",
+    layout="wide"
+)
 
 # ==========================
-# 🎨 STYLE CLAIR PRO
+# 🎨 STYLE PRO ÉQUILIBRÉ
 # ==========================
 st.markdown("""
 <style>
 .stApp {
-    background: linear-gradient(135deg, #eef4ff 0%, #f8fbff 45%, #ffffff 100%);
-    color: #1f2937;
+    background: linear-gradient(135deg, #dfe7f1 0%, #eef2f7 40%, #f4f6f9 100%);
+    color: #1e293b;
 }
 
 h1, h2, h3 {
@@ -92,18 +94,28 @@ h1, h2, h3 {
 }
 
 [data-testid="stMetric"] {
-    background: rgba(255,255,255,0.9);
-    border-radius: 14px;
-    padding: 18px;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.06);
+    background: rgba(255,255,255,0.85);
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
 }
 
 .stAlert {
     border-radius: 14px;
 }
 
+section[data-testid="stSidebar"] {
+    background: #e6ecf5;
+}
+
 .block-container {
-    padding-top: 2rem;
+    padding-top: 2.2rem;
+}
+
+hr {
+    border: none;
+    height: 1px;
+    background: #cbd5e1;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -133,7 +145,7 @@ data = st.session_state.last
 # HEADER
 # ==========================
 st.title("🌡️ Gestion Intelligente Température & Sécurité – IoT")
-st.caption(f"Broker : {MQTT_BROKER} | TCP {MQTT_PORT} | Topic : {TOPIC_DATA}")
+st.caption(f"Broker : {MQTT_BROKER} | TCP 1883 | Topic : {TOPIC_DATA}")
 
 if bridge.connected:
     st.success("✅ MQTT connecté (TCP 1883)")
@@ -195,11 +207,15 @@ if st.session_state.history:
     def line(col, title, unit):
         return (
             alt.Chart(df)
-            .mark_line(interpolate="monotone", strokeWidth=3)
+            .mark_line(
+                interpolate="monotone",
+                strokeWidth=3,
+                color="#2563eb"
+            )
             .encode(
-                x="time:T",
+                x=alt.X("time:T", title="Temps"),
                 y=alt.Y(f"{col}:Q", title=unit),
-                tooltip=["time:T", col],
+                tooltip=["time:T", col]
             )
             .properties(height=280, title=title)
         )
