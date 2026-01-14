@@ -1,238 +1,263 @@
-import streamlit as st
-import paho.mqtt.client as mqtt
-import json
-import threading
-import time
-from datetime import datetime
-from collections import deque
-import pandas as pd
-import altair as alt
-import os
+// ===============================
+// ESP32 - NOEUD DETECTION (STEFFY)
+// Publie JSON -> capteur/data (pour Streamlit)
+// Reçoit flamme Hande -> noeud/operateur/flame
+// Reçoit commandes moteur -> noeud/remote
+// Broker MQTT : 51.103.239.173:1883
+// ===============================
 
-# ==========================
-# CONFIG MQTT
-# ==========================
-MQTT_BROKER = "51.103.239.173"
-MQTT_WS_PORT = 9001
-MQTT_TOPIC = "capteur/data"
-MQTT_WS_PATH = "/"   # souvent "/" avec mosquitto websockets
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include "DHT.h"
 
-# ==========================
-# LOGO (optionnel)
-# ==========================
-LOGO_FILENAME = "LOGO_EPHEC_HE.png"
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
+// ---------- WIFI ----------
+const char* ssid     = "TON_WIFI";
+const char* password = "TON_MDP";
 
-# ==========================
-# FILE THREAD-SAFE (queue)
-# ==========================
-mqtt_queue = deque(maxlen=500)   # messages reçus (thread -> UI)
-mqtt_lock = threading.Lock()
+// ---------- MQTT ----------
+const char* MQTT_BROKER = "51.103.239.173";
+const uint16_t MQTT_PORT = 1883;
 
-# ==========================
-# MQTT THREAD (cache_resource => 1 instance)
-# ==========================
-@st.cache_resource
-def start_mqtt_thread():
-    state = {"connected": False}
+const char* TOPIC_PUB_DATA     = "capteur/data";           // ✅ Streamlit lit ça
+const char* TOPIC_SUB_FLAME_H  = "noeud/operateur/flame";  // Hande -> "0/1"
+const char* TOPIC_SUB_REMOTE   = "noeud/remote";           // commandes moteur
 
-    # callbacks compatibles paho v1/v2
-    def on_connect(client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            state["connected"] = True
-            client.subscribe(MQTT_TOPIC)
-            print("✅ MQTT connected")
-        else:
-            state["connected"] = False
-            print("❌ MQTT connect rc =", rc)
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
 
-    def on_disconnect(client, userdata, rc, properties=None):
-        state["connected"] = False
-        print("🔌 MQTT disconnected rc =", rc)
+// ---------- PINS (adapte si besoin) ----------
+#define PIN_DHT       14
+#define DHTTYPE       DHT11
 
-    def on_message(client, userdata, msg):
-        # IMPORTANT: ne JAMAIS toucher st.session_state ici
-        try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-            payload["_time"] = datetime.now().isoformat(timespec="seconds")
-            with mqtt_lock:
-                mqtt_queue.append(payload)
-        except Exception as e:
-            print("Erreur JSON:", e)
+#define PIN_FLAME_DO  35    // capteur flamme DO (0/1)
+#define PIN_POT       32    // pot ADC (0..4095)
 
-    client = mqtt.Client(transport="websockets", protocol=mqtt.MQTTv311)
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
-    client.on_message = on_message
+#define PIN_LED_RED   15
+#define PIN_LED_GREEN 2
+#define PIN_BUZZER    4
 
-    # Options WS (path)
-    try:
-        client.ws_set_options(path=MQTT_WS_PATH)
-    except Exception:
-        pass
+// L298N
+#define PIN_IN1       16
+#define PIN_IN2       17
+#define PIN_ENA       18    // PWM
 
-    def loop():
-        while True:
-            try:
-                client.connect(MQTT_BROKER, MQTT_WS_PORT, keepalive=60)
-                client.loop_forever()
-            except Exception as e:
-                state["connected"] = False
-                print("⚠️ MQTT loop error:", e)
-                time.sleep(3)
+// ---------- PWM ESP32 ----------
+const int PWM_CH = 0;
+const int PWM_FREQ = 20000;
+const int PWM_RES = 8; // 0..255
 
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
+// ---------- DHT ----------
+DHT dht(PIN_DHT, DHTTYPE);
 
-    return state
+// ---------- ETAT ----------
+float temperature = NAN;
+float humidity = NAN;
 
-# ==========================
-# SESSION STATE INIT
-# ==========================
-st.session_state.setdefault("last_data", {})
-st.session_state.setdefault("history", [])  # UI history
-st.session_state.setdefault("last_seen", None)
+int flameLocal = -1;     // 0/1
+int flameHande = -1;     // 0/1 reçu MQTT
+int alarm = 0;           // 0/1
+int seuilC = 30;         // seuil en °C (pot)
+int potRaw = 0;
 
-# ==========================
-# UI
-# ==========================
-st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
+bool motorOn = false;
+int motorSpeed = 0;      // 0..255
 
-# header + logo
-c_logo, c_title = st.columns([1, 6])
-with c_logo:
-    if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=90)
-    else:
-        st.write("EPHEC")
-with c_title:
-    st.title("🌡️ Gestion Intelligente Température & Sécurité – IoT")
-    st.caption(f"Broker: {MQTT_BROKER} | WebSockets:{MQTT_WS_PORT} | Topic: {MQTT_TOPIC}")
+unsigned long tLastPub = 0;
+const unsigned long PUB_MS = 1000;
 
-# start mqtt once
-mqtt_state = start_mqtt_thread()
+// ---------- OUTILS ----------
+int mapPotToSeuilC(int pot) {
+  // Pot 0..4095 => seuil 20..40°C (tu peux changer)
+  int s = map(pot, 0, 4095, 20, 40);
+  if (s < 0) s = 0;
+  if (s > 60) s = 60;
+  return s;
+}
 
-# ==========================
-# DRAIN QUEUE -> UPDATE UI STATE
-# ==========================
-new_messages = 0
-with mqtt_lock:
-    while mqtt_queue:
-        payload = mqtt_queue.popleft()
-        st.session_state.last_data = payload
-        st.session_state.last_seen = datetime.now()
-        st.session_state.history.append(payload)
-        st.session_state.history = st.session_state.history[-200:]  # keep last 200
-        new_messages += 1
+void setMotor(bool on, int speed) {
+  motorOn = on;
+  motorSpeed = constrain(speed, 0, 255);
 
-# ==========================
-# MQTT STATUS
-# ==========================
-if mqtt_state["connected"]:
-    st.success("✅ MQTT connecté (WebSockets)")
-else:
-    st.error("🔴 MQTT déconnecté (vérifie port 9001 / WS / firewall)")
+  if (!motorOn || motorSpeed == 0) {
+    digitalWrite(PIN_IN1, LOW);
+    digitalWrite(PIN_IN2, LOW);
+    ledcWrite(PWM_CH, 0);
+    motorOn = false;
+    motorSpeed = 0;
+    return;
+  }
 
-if st.session_state.last_seen:
-    st.caption(f"Dernière donnée reçue: {st.session_state.last_seen.strftime('%H:%M:%S')}  |  +{new_messages} msg")
-else:
-    st.warning("En attente de données MQTT… (vérifie que l’ESP32 publie bien sur capteur/data)")
+  // sens fixe (avant). Si tu veux inverser, swap IN1/IN2
+  digitalWrite(PIN_IN1, HIGH);
+  digitalWrite(PIN_IN2, LOW);
+  ledcWrite(PWM_CH, motorSpeed);
+}
 
-st.divider()
+void setAlarm(int state) {
+  alarm = (state ? 1 : 0);
 
-data = st.session_state.last_data
+  if (alarm == 1) {
+    digitalWrite(PIN_LED_RED, HIGH);
+    digitalWrite(PIN_LED_GREEN, LOW);
+    digitalWrite(PIN_BUZZER, HIGH);
+  } else {
+    digitalWrite(PIN_LED_RED, LOW);
+    digitalWrite(PIN_LED_GREEN, HIGH);
+    digitalWrite(PIN_BUZZER, LOW);
+  }
+}
 
-# ==========================
-# METRICS
-# ==========================
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("🌡️ Température (°C)", data.get("temperature", "—"))
-m2.metric("💧 Humidité (%)", data.get("humidity", "—"))
-m3.metric("📦 Seuil (°C)", data.get("seuil", data.get("seuilPot", "—")))
-alarm = data.get("alarm", False)
-m4.metric("🚨 Alarme", "ACTIVE" if alarm else "OK")
+// ---------- MQTT CALLBACK ----------
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg;
+  msg.reserve(length + 1);
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  msg.trim();
 
-st.divider()
+  String t = String(topic);
 
-# ==========================
-# FLAMME
-# ==========================
-c5, c6 = st.columns(2)
-flame = data.get("flame", None)
-flame_h = data.get("flameHande", None)
+  // 1) Flamme Hande : "0" ou "1"
+  if (t == TOPIC_SUB_FLAME_H) {
+    if (msg == "0" || msg == "1") {
+      flameHande = msg.toInt();
+    }
+    return;
+  }
 
-with c5:
-    st.subheader("🔥 Flamme Steffy")
-    if flame == 1:
-        st.error("🔥 FEU DÉTECTÉ")
-    elif flame == 0:
-        st.success("✅ Pas de flamme")
-    else:
-        st.info("En attente…")
+  // 2) Commandes moteur : "MOTOR_OFF" ou "MOTOR_ON 120"
+  if (t == TOPIC_SUB_REMOTE) {
+    msg.toUpperCase();
 
-with c6:
-    st.subheader("🔥 Flamme Hande")
-    if flame_h == 1:
-        st.error("🔥 FEU DÉTECTÉ")
-    elif flame_h == 0:
-        st.success("✅ Pas de flamme")
-    else:
-        st.info("En attente…")
+    if (msg.startsWith("MOTOR_OFF")) {
+      setMotor(false, 0);
+      return;
+    }
 
-st.divider()
+    if (msg.startsWith("MOTOR_ON")) {
+      int sp = 180; // par défaut
+      int idx = msg.indexOf(' ');
+      if (idx > 0) {
+        sp = msg.substring(idx + 1).toInt();
+      }
+      setMotor(true, sp);
+      return;
+    }
 
-# ==========================
-# GRAPHIQUES
-# ==========================
-st.subheader("📊 Graphiques temps réel")
-hist = st.session_state.history
+    return;
+  }
+}
 
-if len(hist) == 0:
-    st.info("Aucune donnée reçue")
-else:
-    df = pd.DataFrame(hist)
+// ---------- MQTT CONNECT ----------
+void mqttConnect() {
+  while (!mqtt.connected()) {
+    String cid = "ESP32_DETECTION_" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    if (mqtt.connect(cid.c_str())) {
+      mqtt.subscribe(TOPIC_SUB_FLAME_H);
+      mqtt.subscribe(TOPIC_SUB_REMOTE);
+    } else {
+      delay(1500);
+    }
+  }
+}
 
-    # convert time
-    df["time"] = pd.to_datetime(df["_time"], errors="coerce")
+// ---------- PUBLISH JSON ----------
+void publishData() {
+  StaticJsonDocument<256> doc;
 
-    def line_chart(df, col, title, ytitle):
-        base = (
-            alt.Chart(df.dropna(subset=["time"]))
-            .mark_line()
-            .encode(
-                x=alt.X("time:T", title="Temps"),
-                y=alt.Y(f"{col}:Q", title=ytitle),
-                tooltip=["time:T", col]
-            )
-            .properties(height=250, title=title)
-        )
-        return base
+  // ✅ clés EXACTES attendues par ton Streamlit
+  // temperature, humidity, seuil, flame, flameHande, alarm, motorSpeed, ...
+  doc["temperature"] = isnan(temperature) ? nullptr : temperature;
+  doc["humidity"]    = isnan(humidity) ? nullptr : humidity;
 
-    g1, g2 = st.columns(2)
-    with g1:
-        if "temperature" in df.columns:
-            st.altair_chart(line_chart(df, "temperature", "Température", "°C"), use_container_width=True)
-    with g2:
-        if "humidity" in df.columns:
-            st.altair_chart(line_chart(df, "humidity", "Humidité", "%"), use_container_width=True)
+  doc["seuil"]       = seuilC;
+  doc["pot"]         = potRaw;
 
-# ==========================
-# OUTILS
-# ==========================
-with st.expander("🧪 Debug JSON (dernier message)"):
-    st.json(data if data else {})
+  doc["flame"]       = flameLocal;     // 0/1
+  doc["flameHande"]  = flameHande;     // 0/1 (ou -1 si pas reçu)
 
-colA, colB = st.columns(2)
-with colA:
-    if st.button("🗑️ Reset historique"):
-        st.session_state.history = []
-        st.success("Historique vidé.")
-with colB:
-    st.caption("Auto-refresh: 1s")
+  doc["alarm"]       = alarm;          // 0/1
+  doc["motorSpeed"]  = motorSpeed;     // 0..255
+  doc["motorOn"]     = motorOn ? 1 : 0;
 
-# ==========================
-# AUTO REFRESH (1s)
-# ==========================
-time.sleep(1)
-st.rerun()
+  doc["timestamp"]   = (long) (millis() / 1000);
+
+  char buffer[256];
+  size_t n = serializeJson(doc, buffer, sizeof(buffer));
+  mqtt.publish(TOPIC_PUB_DATA, buffer, n);
+}
+
+// ---------- SETUP ----------
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIN_LED_RED, OUTPUT);
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_BUZZER, OUTPUT);
+
+  pinMode(PIN_IN1, OUTPUT);
+  pinMode(PIN_IN2, OUTPUT);
+
+  pinMode(PIN_FLAME_DO, INPUT); // GPIO35 = input only (ok)
+
+  // PWM motor
+  ledcSetup(PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(PIN_ENA, PWM_CH);
+  ledcWrite(PWM_CH, 0);
+
+  setAlarm(0);
+  setMotor(false, 0);
+
+  dht.begin();
+
+  // WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(400);
+    Serial.print(".");
+  }
+  Serial.println("\n✅ WiFi connecté");
+
+  // MQTT
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(mqttCallback);
+  mqttConnect();
+  Serial.println("✅ MQTT connecté");
+}
+
+// ---------- LOOP ----------
+void loop() {
+  if (!mqtt.connected()) mqttConnect();
+  mqtt.loop();
+
+  // lecture capteurs
+  potRaw = analogRead(PIN_POT);
+  seuilC = mapPotToSeuilC(potRaw);
+
+  flameLocal = digitalRead(PIN_FLAME_DO); // 0/1
+
+  // DHT (pas trop souvent)
+  static unsigned long tDht = 0;
+  if (millis() - tDht >= 2000) {
+    tDht = millis();
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+    if (!isnan(h)) humidity = h;
+    if (!isnan(t)) temperature = t;
+  }
+
+  // logique alarme (tu peux changer)
+  // alarme si flamme locale OU température > seuil
+  bool alarmCond = false;
+  if (flameLocal == 1) alarmCond = true;
+  if (!isnan(temperature) && temperature > seuilC) alarmCond = true;
+
+  setAlarm(alarmCond ? 1 : 0);
+
+  // publish régulier
+  if (millis() - tLastPub >= PUB_MS) {
+    tLastPub = millis();
+    publishData();
+  }
+}
