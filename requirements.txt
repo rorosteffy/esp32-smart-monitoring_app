@@ -1,5 +1,5 @@
-streamlit
-paho-mqtt
+streamlit>=1.31
+paho-mqtt>=2.0.0
 pandas
 altair
 
