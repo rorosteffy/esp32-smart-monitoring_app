@@ -24,38 +24,51 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
 
 # ==========================
-# QUEUE THREAD-SAFE
+# OBJET PERSISTANT (queue + état + thread)
 # ==========================
-mqtt_queue = deque(maxlen=500)
-mqtt_lock = threading.Lock()
+class MqttBridge:
+    def __init__(self):
+        self.connected = False
+        self.queue = deque(maxlen=500)
+        self.lock = threading.Lock()
+        self.client = None
+        self.thread = None
+        self.started = False
 
-# ==========================
-# MQTT THREAD (une seule fois)
-# ==========================
+    def push(self, payload: dict):
+        with self.lock:
+            self.queue.append(payload)
+
+    def pop_all(self):
+        items = []
+        with self.lock:
+            while self.queue:
+                items.append(self.queue.popleft())
+        return items
+
+
 @st.cache_resource
-def start_mqtt():
-    state = {"connected": False}
+def get_mqtt_bridge():
+    bridge = MqttBridge()
 
     def on_connect(client, userdata, flags, rc, properties=None):
         if rc == 0:
-            state["connected"] = True
+            bridge.connected = True
             client.subscribe(TOPIC_DATA)
             print("✅ MQTT connected -> subscribed:", TOPIC_DATA)
         else:
-            state["connected"] = False
+            bridge.connected = False
             print("❌ MQTT connect failed rc =", rc)
 
     def on_disconnect(client, userdata, rc, properties=None):
-        state["connected"] = False
+        bridge.connected = False
         print("🔌 MQTT disconnected rc =", rc)
 
     def on_message(client, userdata, msg):
-        # ⚠️ NE JAMAIS toucher st.session_state ici !
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
             payload["_time"] = datetime.now().isoformat(timespec="seconds")
-            with mqtt_lock:
-                mqtt_queue.append(payload)
+            bridge.push(payload)
         except Exception as e:
             print("⚠️ JSON invalide:", e, "payload=", msg.payload)
 
@@ -70,16 +83,19 @@ def start_mqtt():
                 client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
                 client.loop_forever()
             except Exception as e:
-                state["connected"] = False
+                bridge.connected = False
                 print("⚠️ MQTT loop error:", e)
                 time.sleep(3)
 
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
-    return state
+    bridge.client = client
+    bridge.thread = threading.Thread(target=loop, daemon=True)
+    bridge.thread.start()
+    bridge.started = True
+    return bridge
+
 
 # ==========================
-# SESSION STATE INIT (UI seulement)
+# SESSION STATE INIT (UI)
 # ==========================
 st.session_state.setdefault("last_data", {})
 st.session_state.setdefault("history", [])
@@ -90,7 +106,6 @@ st.session_state.setdefault("last_seen", None)
 # ==========================
 st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
 
-# Header
 c1, c2 = st.columns([1, 6])
 with c1:
     if os.path.exists(LOGO_PATH):
@@ -101,38 +116,34 @@ with c2:
     st.title("🌡️ Gestion Intelligente Température & Sécurité – IoT")
     st.caption(f"Broker: {MQTT_BROKER} | TCP:{MQTT_PORT} | Topic: {TOPIC_DATA}")
 
-# Start MQTT (1 fois)
-mqtt_state = start_mqtt()
+bridge = get_mqtt_bridge()
 
 # ==========================
 # DRAIN QUEUE -> UPDATE UI
 # ==========================
-new_count = 0
-with mqtt_lock:
-    while mqtt_queue:
-        msg = mqtt_queue.popleft()
-        st.session_state.last_data = msg
-        st.session_state.last_seen = datetime.now()
-        st.session_state.history.append(msg)
-        st.session_state.history = st.session_state.history[-200:]
-        new_count += 1
+new_msgs = bridge.pop_all()
+for msg in new_msgs:
+    st.session_state.last_data = msg
+    st.session_state.last_seen = datetime.now()
+    st.session_state.history.append(msg)
+
+st.session_state.history = st.session_state.history[-200:]
+data = st.session_state.last_data or {}
 
 # ==========================
 # STATUS
 # ==========================
-if mqtt_state["connected"]:
+if bridge.connected:
     st.success("✅ MQTT connecté (TCP 1883)")
 else:
     st.error("🔴 MQTT déconnecté")
 
 if st.session_state.last_seen:
-    st.caption(f"Dernière donnée reçue: {st.session_state.last_seen.strftime('%H:%M:%S')} | +{new_count} msg")
+    st.info(f"✅ Données reçues: {st.session_state.last_seen.strftime('%H:%M:%S')} | +{len(new_msgs)} msg")
 else:
     st.warning("En attente de données MQTT… (vérifie que l’ESP32 publie bien sur capteur/data)")
 
 st.divider()
-
-data = st.session_state.last_data or {}
 
 # ==========================
 # METRICS
@@ -141,6 +152,7 @@ m1, m2, m3, m4 = st.columns(4)
 m1.metric("🌡️ Température (°C)", data.get("temperature", "—"))
 m2.metric("💧 Humidité (%)", data.get("humidity", "—"))
 m3.metric("📦 Seuil (°C)", data.get("seuil", data.get("seuilPot", "—")))
+
 alarm = data.get("alarm", False)
 m4.metric("🚨 Alarme", "ACTIVE" if alarm else "OK")
 
