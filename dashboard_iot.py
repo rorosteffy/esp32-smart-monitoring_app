@@ -1,8 +1,9 @@
 # dashboard_iot.py
-# ✅ Streamlit Cloud (WebSockets) + Local (TCP) fallback
-# ✅ 1 seul client MQTT (stable)
-# ✅ Lit les BONNES clés JSON de ton ESP32 (seuil, flameHande, alarm...)
-# ✅ Graph temps réel + UI propre
+# ✅ Streamlit Cloud + Local
+# ✅ MQTT stable (1 seul client, loop_start)
+# ✅ Temps réel (rafraîchissement UI)
+# ✅ Compatible paho-mqtt v1/v2 (properties=None)
+# ✅ Lit les clés ESP32: temperature, humidity, seuil, flame, flameHande, alarm, ...
 
 import os
 import time
@@ -17,26 +18,25 @@ import pandas as pd
 import altair as alt
 import paho.mqtt.client as mqtt
 
-# ==========================
-# CONFIG MQTT
-# ==========================
-MQTT_BROKER = os.getenv("MQTT_BROKER", "51.103.239.173")
 
-# Streamlit Cloud => websockets (9001)
-MQTT_WS_PORT = int(os.getenv("MQTT_WS_PORT", "9001"))
-MQTT_WS_PATH = os.getenv("MQTT_WS_PATH", "/")  # si besoin: "/mqtt"
+# ==========================
+# CONFIG
+# ==========================
+MQTT_BROKER = "51.103.239.173"
 
-# Local => TCP classique (1883)
-MQTT_TCP_PORT = int(os.getenv("MQTT_TCP_PORT", "1883"))
+# Streamlit Cloud ➜ WebSocket
+MQTT_WS_PORT = 9001
+MQTT_WS_PATH = "/"          # souvent "/" (ou "/mqtt" selon config mosquitto)
+
+# Local/VM ➜ TCP
+MQTT_TCP_PORT = 1883
 
 TOPIC_DATA = "capteur/data"
 
-# ==========================
-# LOGO (optionnel)
-# ==========================
 LOGO_FILENAME = "LOGO_EPHEC_HE.png"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(SCRIPT_DIR, LOGO_FILENAME)
+
 
 # ==========================
 # ETAT PARTAGE (thread-safe)
@@ -50,8 +50,6 @@ LAST = {
     "seuil": None,
     "flame": None,
     "flameHande": None,
-    "alarmTemp": None,
-    "alarmFlame": None,
     "alarm": None,
     "alarmLocal": None,
     "muted": None,
@@ -60,10 +58,11 @@ LAST = {
     "last_update": None,
 }
 
-HISTORY = deque(maxlen=400)
+HISTORY = deque(maxlen=300)   # 300 derniers points
+
 
 # ==========================
-# MQTT CALLBACKS
+# MQTT CALLBACKS (paho v1/v2)
 # ==========================
 def on_connect(client, userdata, flags, rc, properties=None):
     global MQTT_CONNECTED
@@ -72,35 +71,35 @@ def on_connect(client, userdata, flags, rc, properties=None):
 
     if rc == 0:
         client.subscribe(TOPIC_DATA, qos=0)
-        print("✅ MQTT connecté, abonné à", TOPIC_DATA)
+        print("✅ MQTT CONNECTED, subscribed:", TOPIC_DATA)
     else:
-        print("❌ MQTT erreur rc =", rc)
+        print("❌ MQTT connect error rc =", rc)
+
 
 def on_disconnect(client, userdata, rc, properties=None):
     global MQTT_CONNECTED
     with LOCK:
         MQTT_CONNECTED = False
-    print("🔌 MQTT déconnecté rc =", rc)
+    print("🔌 MQTT disconnected rc =", rc)
+
 
 def on_message(client, userdata, msg):
     global LAST, HISTORY
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
     except Exception as e:
-        print("JSON invalide:", e)
+        print("❌ JSON invalide:", e, "payload=", msg.payload[:120])
         return
 
     now = datetime.now()
 
-    # ✅ correspond EXACTEMENT à ton JSON ESP32 vu dans mosquitto_sub
+    # ⚠️ Ton ESP32 publie : temperature, humidity, seuil, flame, flameHande, alarm, ...
     with LOCK:
         LAST["temperature"] = payload.get("temperature")
         LAST["humidity"] = payload.get("humidity")
         LAST["seuil"] = payload.get("seuil")
         LAST["flame"] = payload.get("flame")
-        LAST["flameHande"] = payload.get("flameHande")
-        LAST["alarmTemp"] = payload.get("alarmTemp")
-        LAST["alarmFlame"] = payload.get("alarmFlame")
+        LAST["flameHande"] = payload.get("flameHande")  # ton JSON VM montre flameHande
         LAST["alarm"] = payload.get("alarm")
         LAST["alarmLocal"] = payload.get("alarmLocal")
         LAST["muted"] = payload.get("muted")
@@ -116,53 +115,44 @@ def on_message(client, userdata, msg):
             "flame": LAST["flame"],
         })
 
+
 # ==========================
-# MQTT CLIENT (1 seule fois)
+# MQTT CLIENT (1 SEUL)
 # ==========================
 @st.cache_resource
 def init_mqtt_client():
     """
-    Streamlit => 1 seul client par process.
-    D'abord WebSockets (Cloud), si échec -> fallback TCP (local).
+    1 seul client MQTT par process Streamlit.
+    - En Cloud: WebSockets (port 9001)
+    - En local: si tu veux TCP, tu peux switcher dans la sidebar
     """
+    # ID unique
     cid = f"st_{socket.gethostname()}_{os.getpid()}"
+
+    # On crée le client en WebSocket (Cloud-friendly)
     client = mqtt.Client(
         client_id=cid,
         protocol=mqtt.MQTTv311,
         transport="websockets"
     )
 
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
-    client.on_message = on_message
-
-    # options websockets
+    # Optionnel : path websocket
     try:
         client.ws_set_options(path=MQTT_WS_PATH)
     except Exception:
         pass
 
-    client.reconnect_delay_set(min_delay=1, max_delay=10)
-
-    # 1) tentative websockets
-    try:
-        print(f"➡️ Try WS {MQTT_BROKER}:{MQTT_WS_PORT} path={MQTT_WS_PATH}")
-        client.connect_async(MQTT_BROKER, MQTT_WS_PORT, keepalive=60)
-        client.loop_start()
-        return client
-    except Exception as e:
-        print("WS fail:", e)
-
-    # 2) fallback TCP
-    client = mqtt.Client(client_id=cid, protocol=mqtt.MQTTv311, transport="tcp")
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
+
     client.reconnect_delay_set(min_delay=1, max_delay=10)
-    print(f"➡️ Fallback TCP {MQTT_BROKER}:{MQTT_TCP_PORT}")
-    client.connect_async(MQTT_BROKER, MQTT_TCP_PORT, keepalive=60)
+
+    # Connexion async + loop thread interne
+    client.connect_async(MQTT_BROKER, MQTT_WS_PORT, keepalive=60)
     client.loop_start()
     return client
+
 
 # ==========================
 # UI helpers
@@ -177,7 +167,8 @@ def metric_value(v, fmt="{:.1f}"):
             return str(v)
     return str(v)
 
-def build_bar(df: pd.DataFrame, y: str, title: str, ytitle: str):
+
+def bar_chart(df: pd.DataFrame, y: str, title: str, ytitle: str):
     return (
         alt.Chart(df)
         .mark_bar()
@@ -189,30 +180,35 @@ def build_bar(df: pd.DataFrame, y: str, title: str, ytitle: str):
         .properties(height=260, title=title)
     )
 
+
 def safe_rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
 
+
 # ==========================
-# MAIN
+# MAIN APP
 # ==========================
 def main():
     st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
 
-    # démarre MQTT
+    # démarre MQTT (1 seule fois)
     init_mqtt_client()
 
+    # --- CSS ---
     st.markdown("""
     <style>
       .stApp {
         background: radial-gradient(circle at top left, #f5f0ff 0, #dbe2ff 35%, #c8d9ff 65%, #b8d3ff 100%);
+        color: #0f172a;
       }
       h1 { font-weight: 800; }
     </style>
     """, unsafe_allow_html=True)
 
+    # --- Header ---
     col_logo, col_title = st.columns([1, 6])
     with col_logo:
         if os.path.exists(LOGO_PATH):
@@ -221,29 +217,33 @@ def main():
             st.write("EPHEC")
     with col_title:
         st.title("Gestion Intelligente Température & Sécurité – IoT")
-        st.caption(f"Broker: {MQTT_BROKER} | WS:{MQTT_WS_PORT}{MQTT_WS_PATH} | TCP:{MQTT_TCP_PORT}")
 
+    # Snapshot thread-safe
     with LOCK:
         last = dict(LAST)
         hist = list(HISTORY)
         connected = MQTT_CONNECTED
 
+    # Data freshness
     fresh = False
     age_s = None
     if last["last_update"] is not None:
         age_s = (datetime.now() - last["last_update"]).total_seconds()
         fresh = (age_s <= 8.0)
 
+    # Statut
+    st.caption(f"Broker: {MQTT_BROKER} | WS:{MQTT_WS_PORT} | topic:{TOPIC_DATA}")
     if connected or fresh:
-        st.success("État MQTT : ✅ Connecté / données récentes")
+        st.success("État MQTT : ✅ Connecté (ou données reçues récemment)")
     else:
-        st.error("En attente de données MQTT… (Cloud: vérifie WebSockets port 9001 ouvert)")
+        st.error("État MQTT : 🔴 Déconnecté / aucune donnée récente (vérifie WS port 9001 ouvert)")
 
     if age_s is not None:
         st.caption(f"Dernière donnée reçue il y a ~{age_s:.1f} s")
 
     st.markdown("---")
 
+    # --- Cartes principales ---
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.subheader("🌡️ Température")
@@ -258,61 +258,89 @@ def main():
         st.subheader("🚨 Alarme")
         if last["alarm"] is True:
             st.error("Alarme ACTIVE")
-        else:
+        elif last["alarm"] is False:
             st.success("Alarme inactive")
+        else:
+            st.info("En attente…")
 
     st.markdown("---")
 
-    c5, c6 = st.columns(2)
-    with c5:
+    # --- Flamme ---
+    f1, f2 = st.columns(2)
+    with f1:
         st.subheader("🔥 IR / Flamme (Steffy)")
-        f = last["flame"]
-        if f is None:
+        fl = last["flame"]
+        if fl is None:
             st.info("En attente (flame=None)…")
-        elif int(f) == 1:
+        elif int(fl) == 1:
             st.error("🔥 Feu détecté (flame=1)")
         else:
             st.success("✅ Pas de flamme (flame=0)")
 
-    with c6:
+    with f2:
         st.subheader("🔥 Flamme binôme (Hande)")
         fh = last["flameHande"]
         if fh is None:
             st.info("En attente (flameHande=None)…")
         elif int(fh) == 1:
-            st.warning("⚠️ Flamme chez la binôme")
+            st.warning("⚠️ Flamme chez la binôme (flameHande=1)")
         else:
-            st.success("✅ Pas de flamme chez la binôme")
+            st.success("✅ Pas de flamme chez la binôme (flameHande=0)")
 
     st.markdown("---")
 
+    # --- Graphiques temps réel (barres comme tu veux) ---
     st.subheader("📊 Graphiques en temps réel (barres)")
+
     if len(hist) == 0:
-        st.info("En attente de données sur capteur/data…")
+        st.info("En attente de données MQTT… (vérifie que l’ESP32 publie bien sur capteur/data)")
     else:
         df = pd.DataFrame(hist).tail(120)
 
         g1, g2 = st.columns(2)
         with g1:
-            st.altair_chart(build_bar(df, "temperature", "Température", "°C"), use_container_width=True)
+            st.altair_chart(bar_chart(df, "temperature", "Température", "°C"), use_container_width=True)
         with g2:
-            st.altair_chart(build_bar(df, "humidity", "Humidité", "%"), use_container_width=True)
+            st.altair_chart(bar_chart(df, "humidity", "Humidité", "%"), use_container_width=True)
 
         g3, g4 = st.columns(2)
         with g3:
-            st.altair_chart(build_bar(df, "seuil", "Seuil", "°C"), use_container_width=True)
+            st.altair_chart(bar_chart(df, "seuil", "Seuil (ESP32)", "°C"), use_container_width=True)
         with g4:
-            st.altair_chart(build_bar(df, "flame", "Flamme", "0/1"), use_container_width=True)
+            st.altair_chart(bar_chart(df, "flame", "Flamme", "0/1"), use_container_width=True)
 
     st.markdown("---")
-    st.subheader("🩺 Diagnostic")
-    st.json(last)
 
-    st.sidebar.markdown("### 🔄 Rafraîchissement")
-    refresh_s = st.sidebar.slider("Refresh UI (secondes)", 1, 10, 2)
+    # --- Diagnostic ---
+    st.subheader("🩺 Diagnostic du système")
+    d1, d2 = st.columns(2)
+    with d1:
+        st.write("Dernier JSON interprété :")
+        st.json(last)
+
+    with d2:
+        if st.button("🗑️ Effacer l'historique"):
+            with LOCK:
+                HISTORY.clear()
+            st.success("Historique effacé.")
+
+        if len(hist) > 0:
+            df_all = pd.DataFrame(hist)
+            csv_data = df_all.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "💾 Télécharger l’historique CSV",
+                data=csv_data,
+                file_name="historique_mesures.csv",
+                mime="text/csv",
+            )
+
+    # --- Refresh ---
+    st.sidebar.markdown("### 🔄 Rafraîchissement UI")
+    refresh_s = st.sidebar.slider("Toutes les (secondes)", 1, 10, 2)
 
     time.sleep(refresh_s)
     safe_rerun()
+
 
 if __name__ == "__main__":
     main()
