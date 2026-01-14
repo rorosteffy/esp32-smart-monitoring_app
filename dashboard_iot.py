@@ -39,9 +39,10 @@ class MqttBridge:
 def get_bridge():
     bridge = MqttBridge()
 
+    # ✅ paho v1 ET v2 compatible
     def on_connect(client, userdata, flags, rc, properties=None):
+        bridge.connected = (rc == 0)
         if rc == 0:
-            bridge.connected = True
             client.subscribe(TOPIC_DATA)
 
     def on_disconnect(client, userdata, rc, properties=None):
@@ -49,8 +50,8 @@ def get_bridge():
 
     def on_message(client, userdata, msg):
         try:
-            data = json.loads(msg.payload.decode())
-            data["_time"] = datetime.now()
+            data = json.loads(msg.payload.decode("utf-8"))
+            data["_time"] = datetime.now()  # datetime direct
             bridge.push(data)
         except:
             pass
@@ -59,6 +60,7 @@ def get_bridge():
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
+    client.reconnect_delay_set(min_delay=1, max_delay=5)
 
     def loop():
         while True:
@@ -66,7 +68,8 @@ def get_bridge():
                 client.connect(MQTT_BROKER, MQTT_PORT, 60)
                 client.loop_forever()
             except:
-                time.sleep(3)
+                bridge.connected = False
+                time.sleep(2)
 
     threading.Thread(target=loop, daemon=True).start()
     return bridge
@@ -77,51 +80,33 @@ def get_bridge():
 st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
 
 # ==========================
-# 🎨 THEME PRO (BLEU/ROSE) - PAS TROP SOMBRE
+# 🎨 THEME PRO BLEU/ROSE (un peu sombre)
 # ==========================
 st.markdown("""
 <style>
-/* Background global : un peu plus sombre + bleu/rose */
 .stApp{
   background: linear-gradient(135deg,
-    #b9c6dd 0%,
-    #cfd7ea 35%,
-    #e7d2e8 70%,
-    #f2eff8 100%);
+    #93a8c6 0%,
+    #a7b7d6 30%,
+    #c7b0d8 65%,
+    #e7e2f2 100%);
   color:#0f172a;
 }
+.block-container{ padding-top: 1.8rem; }
+h1,h2,h3{ color:#0b1220; }
 
-/* Conteneur principal */
-.block-container{
-  padding-top: 2.0rem;
-}
-
-/* Titres */
-h1,h2,h3{
-  color:#0b1220;
-}
-
-/* Alerts (status MQTT etc.) */
-.stAlert{
-  border-radius: 16px;
-  box-shadow: 0 10px 25px rgba(15,23,42,0.08);
-}
-
-/* Cartes custom (metrics) */
 .metric-card{
   background: rgba(255,255,255,0.78);
   border: 1px solid rgba(255,255,255,0.55);
   border-radius: 18px;
-  padding: 18px 18px 14px 18px;
-  box-shadow: 0 14px 35px rgba(15,23,42,0.10);
+  padding: 16px 16px 12px 16px;
+  box-shadow: 0 14px 35px rgba(15,23,42,0.12);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   position: relative;
   overflow: hidden;
-  min-height: 110px;
+  min-height: 105px;
 }
-
-/* Bande colorée en haut de chaque carte */
 .metric-card::before{
   content:"";
   position:absolute;
@@ -129,44 +114,17 @@ h1,h2,h3{
   height:7px;
   background: var(--accent, linear-gradient(90deg,#3b82f6,#ec4899));
 }
+.metric-label{ font-size: 0.95rem; opacity: 0.85; margin-bottom: 6px; }
+.metric-value{ font-size: 2.0rem; font-weight: 850; letter-spacing: -0.02em; color: var(--val, #0f172a); }
+.metric-sub{ margin-top: 6px; font-size: 0.85rem; opacity: 0.70; }
 
-/* Label + valeur */
-.metric-label{
-  font-size: 0.95rem;
-  opacity: 0.85;
-  margin-bottom: 8px;
-}
-.metric-value{
-  font-size: 2.0rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: var(--val, #0f172a);
-}
-
-/* Sous-texte discret */
-.metric-sub{
-  margin-top: 6px;
-  font-size: 0.85rem;
-  opacity: 0.70;
-}
-
-/* Dividers */
-hr{
-  border:none;
-  height:1px;
-  background: rgba(15,23,42,0.15);
-}
-
-/* Graph container : arrondi + léger fond */
 [data-testid="stAltairChart"]{
   background: rgba(255,255,255,0.72);
   border-radius: 18px;
   padding: 10px 10px 6px 10px;
-  box-shadow: 0 14px 35px rgba(15,23,42,0.09);
+  box-shadow: 0 14px 35px rgba(15,23,42,0.11);
   border: 1px solid rgba(255,255,255,0.55);
 }
-
-/* Sidebar un peu plus douce */
 section[data-testid="stSidebar"]{
   background: rgba(255,255,255,0.55);
   backdrop-filter: blur(12px);
@@ -196,7 +154,7 @@ st.session_state.setdefault("last_seen", None)
 bridge = get_bridge()
 
 # ==========================
-# DATA UPDATE
+# UPDATE DATA
 # ==========================
 msgs = bridge.pop_all()
 for m in msgs:
@@ -208,10 +166,10 @@ st.session_state.history = st.session_state.history[-250:]
 data = st.session_state.last or {}
 
 # ==========================
-# HEADER
+# HEADER + STATUS
 # ==========================
 st.title("🌡️ Gestion Intelligente Température & Sécurité – IoT")
-st.caption(f"Broker : {MQTT_BROKER} | TCP 1883 | Topic : {TOPIC_DATA}")
+st.caption(f"Broker : {MQTT_BROKER} | Port : {MQTT_PORT} | Topic : {TOPIC_DATA}")
 
 if bridge.connected:
     st.success("✅ MQTT connecté (TCP 1883)")
@@ -219,57 +177,36 @@ else:
     st.error("🔴 MQTT déconnecté")
 
 if st.session_state.last_seen:
-    st.info(f"📥 Données reçues à {st.session_state.last_seen.strftime('%H:%M:%S')} (+{len(msgs)} msg)")
+    st.info(f"📥 Dernière donnée: {st.session_state.last_seen.strftime('%H:%M:%S')} (+{len(msgs)} msg)")
 else:
-    st.warning("⏳ En attente de données MQTT…")
+    st.warning("⏳ En attente de données MQTT… (vérifie l’ESP32 publie capteur/data)")
 
 st.divider()
 
 # ==========================
-# METRICS (COULEURS)
+# METRICS
 # ==========================
 c1, c2, c3, c4 = st.columns(4)
 
 temp = data.get("temperature", "—")
 hum = data.get("humidity", "—")
 seuil = data.get("seuil", data.get("seuilPot", "—"))
-alarm = data.get("alarm", False)
+alarm = bool(data.get("alarm", False))
 
 with c1:
-    metric_card(
-        "🌡️ Température (°C)",
-        f"{temp}",
-        "linear-gradient(90deg,#2563eb,#22c55e)",  # bleu -> vert
-        "#0b1b3a",
-        "Mesure DHT11"
-    )
-
+    metric_card("🌡️ Température (°C)", f"{temp}",
+                "linear-gradient(90deg,#2563eb,#22c55e)", "#0b1b3a", "Mesure DHT11")
 with c2:
-    metric_card(
-        "💧 Humidité (%)",
-        f"{hum}",
-        "linear-gradient(90deg,#06b6d4,#3b82f6)",  # cyan -> bleu
-        "#083344",
-        "Mesure DHT11"
-    )
-
+    metric_card("💧 Humidité (%)", f"{hum}",
+                "linear-gradient(90deg,#06b6d4,#3b82f6)", "#083344", "Mesure DHT11")
 with c3:
-    metric_card(
-        "📦 Seuil (°C)",
-        f"{seuil}",
-        "linear-gradient(90deg,#8b5cf6,#ec4899)",  # violet -> rose
-        "#2e1065",
-        "Consigne / Pot"
-    )
-
+    metric_card("📦 Seuil (°C)", f"{seuil}",
+                "linear-gradient(90deg,#8b5cf6,#ec4899)", "#2e1065", "Consigne / Pot")
 with c4:
-    metric_card(
-        "🚨 Alarme",
-        "ACTIVE" if alarm else "OK",
-        "linear-gradient(90deg,#ef4444,#f59e0b)" if alarm else "linear-gradient(90deg,#22c55e,#3b82f6)",
-        "#7f1d1d" if alarm else "#0f172a",
-        "État global"
-    )
+    metric_card("🚨 Alarme", "ACTIVE" if alarm else "OK",
+                "linear-gradient(90deg,#ef4444,#f59e0b)" if alarm else "linear-gradient(90deg,#22c55e,#3b82f6)",
+                "#7f1d1d" if alarm else "#0f172a",
+                "État global")
 
 st.divider()
 
@@ -299,41 +236,63 @@ with f2:
 st.divider()
 
 # ==========================
-# 📈 GRAPHIQUES (COURBES + STYLE PRO)
+# 📈 GRAPHIQUES (COURBES + STEP)
 # ==========================
-st.subheader("📈 Graphiques temps réel")
+st.subheader("📈 Graphiques temps réel (courbes)")
 
-if st.session_state.history:
-    df = pd.DataFrame(st.session_state.history)
-    df["time"] = pd.to_datetime(df["_time"])
+hist = st.session_state.history
+if not hist:
+    st.info("Aucune donnée pour les graphiques.")
+else:
+    df = pd.DataFrame(hist)
+    df["time"] = pd.to_datetime(df["_time"], errors="coerce")
+    df = df.dropna(subset=["time"]).tail(250)
 
-    def line(col, title, unit, color_hex):
-        d = df.dropna(subset=["time"])
-        if col not in d.columns:
+    def line_chart(col, title, unit, color_hex):
+        if col not in df.columns:
             return None
         return (
-            alt.Chart(d)
+            alt.Chart(df)
             .mark_line(interpolate="monotone", strokeWidth=3, color=color_hex)
             .encode(
                 x=alt.X("time:T", title="Temps"),
                 y=alt.Y(f"{col}:Q", title=unit),
-                tooltip=["time:T", col],
+                tooltip=["time:T", alt.Tooltip(f"{col}:Q")]
+            )
+            .properties(height=280, title=title)
+        )
+
+    def step_chart(col, title, unit, color_hex):
+        if col not in df.columns:
+            return None
+        return (
+            alt.Chart(df)
+            .mark_line(interpolate="step-after", strokeWidth=4, color=color_hex)
+            .encode(
+                x=alt.X("time:T", title="Temps"),
+                y=alt.Y(f"{col}:Q", title=unit, scale=alt.Scale(domain=[-0.05, 1.05])),
+                tooltip=["time:T", alt.Tooltip(f"{col}:Q")]
             )
             .properties(height=280, title=title)
         )
 
     g1, g2 = st.columns(2)
     with g1:
-        ch = line("temperature", "Température", "°C", "#2563eb")  # bleu
-        if ch:
-            st.altair_chart(ch, use_container_width=True)
-
+        ch = line_chart("temperature", "Température", "°C", "#2563eb")
+        if ch: st.altair_chart(ch, use_container_width=True)
     with g2:
-        ch = line("humidity", "Humidité", "%", "#ec4899")  # rose
-        if ch:
-            st.altair_chart(ch, use_container_width=True)
-else:
-    st.info("Aucune donnée pour les graphiques")
+        ch = line_chart("humidity", "Humidité", "%", "#ec4899")
+        if ch: st.altair_chart(ch, use_container_width=True)
+
+    g3, g4 = st.columns(2)
+    with g3:
+        ch = line_chart("seuil", "Seuil (si présent)", "°C", "#7c3aed")
+        if ch: st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("Pas de colonne 'seuil' dans l’historique (OK si tu envoies seuilPot).")
+    with g4:
+        ch = step_chart("flame", "IR / Flamme (0/1) - STEP", "0/1", "#f97316")
+        if ch: st.altair_chart(ch, use_container_width=True)
 
 with st.expander("🧪 Debug JSON (dernier message)"):
     st.json(data)
