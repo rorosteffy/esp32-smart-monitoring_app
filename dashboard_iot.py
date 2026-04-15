@@ -102,7 +102,7 @@ def init_mqtt():
 
 
 # =========================
-# MQTT HELPERS
+# HELPERS MQTT
 # =========================
 def publish_command(topic, payload):
     global MQTT_CLIENT
@@ -118,21 +118,21 @@ def publish_command(topic, payload):
 
 
 # =========================
-# UI HELPERS
+# HELPERS UI
 # =========================
 def big_status(text, bg="#16a34a"):
     return f"""
     <div style="
         background:{bg};
-        border-radius:18px;
+        border-radius:16px;
         padding:24px 18px;
         text-align:center;
         color:white;
         font-size:24px;
         font-weight:800;
-        box-shadow:0 8px 18px rgba(0,0,0,0.16);
+        box-shadow:0 6px 14px rgba(0,0,0,0.15);
         border:1px solid rgba(255,255,255,0.12);
-        min-height:84px;
+        min-height:76px;
         display:flex;
         align-items:center;
         justify-content:center;
@@ -143,21 +143,21 @@ def big_status(text, bg="#16a34a"):
 
 
 def dual_status(left_text, ok_active=True):
-    ok_color = "#22c55e" if ok_active else "#7890a8"
+    ok_color = "#22c55e" if ok_active else "#7c8aa0"
     nok_color = "#dc2626" if not ok_active else "#8b1e1e"
 
     return f"""
     <div style="
         background:#18a84b;
-        border-radius:34px;
-        padding:15px 18px;
+        border-radius:30px;
+        padding:14px 18px;
         display:flex;
         align-items:center;
         justify-content:space-between;
         color:white;
         font-weight:800;
         font-size:20px;
-        box-shadow:0 8px 18px rgba(0,0,0,0.16);
+        box-shadow:0 6px 14px rgba(0,0,0,0.15);
         border:1px solid rgba(255,255,255,0.12);
     ">
         <span>{left_text}</span>
@@ -165,13 +165,13 @@ def dual_status(left_text, ok_active=True):
             <span style="
                 background:{ok_color};
                 padding:8px 18px;
-                border-radius:11px;
+                border-radius:10px;
                 font-size:18px;
             ">OK</span>
             <span style="
                 background:{nok_color};
                 padding:8px 18px;
-                border-radius:11px;
+                border-radius:10px;
                 font-size:18px;
             ">NOK</span>
         </div>
@@ -183,15 +183,15 @@ def value_card(title, value, header_color, body_color):
     st.markdown(
         f"""
         <div style="
-            border-radius:18px;
+            border-radius:16px;
             overflow:hidden;
-            box-shadow:0 8px 18px rgba(0,0,0,0.16);
+            box-shadow:0 6px 14px rgba(0,0,0,0.15);
             border:1px solid rgba(255,255,255,0.12);
         ">
             <div style="
                 background:{header_color};
                 color:white;
-                padding:18px 20px;
+                padding:18px;
                 font-size:20px;
                 font-weight:700;
             ">
@@ -200,9 +200,9 @@ def value_card(title, value, header_color, body_color):
             <div style="
                 background:{body_color};
                 color:white;
-                padding:38px 24px;
+                padding:34px 24px;
                 text-align:center;
-                font-size:60px;
+                font-size:58px;
                 font-weight:800;
             ">
                 {value}
@@ -213,7 +213,7 @@ def value_card(title, value, header_color, body_color):
     )
 
 
-def small_indicator(text, active=True, color_active="#16a34a", color_inactive="#97a9bc"):
+def small_indicator(text, active=True, color_active="#16a34a", color_inactive="#94a3b8"):
     bg = color_active if active else color_inactive
     txt = "white" if active else "#102030"
 
@@ -222,17 +222,17 @@ def small_indicator(text, active=True, color_active="#16a34a", color_inactive="#
         <div style="
             background:{bg};
             color:{txt};
-            border-radius:14px;
+            border-radius:12px;
             padding:18px;
             font-size:18px;
             font-weight:700;
             text-align:center;
-            min-height:74px;
+            min-height:72px;
             display:flex;
             align-items:center;
             justify-content:center;
             border:1px solid rgba(255,255,255,0.12);
-            box-shadow:0 5px 12px rgba(0,0,0,0.10);
+            box-shadow:0 4px 10px rgba(0,0,0,0.10);
         ">
             {text}
         </div>
@@ -256,15 +256,36 @@ def alarm_row(icon, text, active=False):
         <div style="
             background:{bg};
             border:1px solid {border};
-            border-radius:14px;
+            border-radius:12px;
             padding:16px 18px;
             color:{txt};
             font-size:18px;
             font-weight:700;
             margin-bottom:12px;
-            box-shadow:0 3px 8px rgba(0,0,0,0.07);
+            box-shadow:0 2px 6px rgba(0,0,0,0.07);
         ">
             {icon} &nbsp; {text}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def button_label(title, bg):
+    st.markdown(
+        f"""
+        <div style="
+            background:{bg};
+            color:white;
+            text-align:center;
+            padding:16px 12px;
+            border-radius:14px;
+            font-size:26px;
+            font-weight:900;
+            box-shadow:0 6px 14px rgba(0,0,0,0.15);
+            margin-bottom:8px;
+        ">
+            {title}
         </div>
         """,
         unsafe_allow_html=True
@@ -281,71 +302,41 @@ def main():
     st.markdown("""
     <style>
     .stApp {
-        background: linear-gradient(180deg, #b4c0ce 0%, #a1b0c0 100%);
+        background: linear-gradient(180deg, #edf4fb 0%, #dce8f3 100%);
         color: #102030;
     }
 
     .block-container {
-        max-width: 1420px;
-        padding-top: 0.45rem;
+        max-width: 1460px;
+        padding-top: 0.8rem;
         padding-bottom: 1rem;
     }
 
     h1, h2, h3 {
-        color: #0f223a !important;
+        color: #102030 !important;
         font-weight: 800 !important;
-        margin-bottom: 0.45rem !important;
-    }
-
-    .main-title {
-        width: 100%;
-        text-align: center;
-        font-size: 2.75rem;
-        font-weight: 900;
-        color: #0b1f38;
-        margin-top: 0.15rem;
-        margin-bottom: 1rem;
-        line-height: 1.15;
     }
 
     div[data-testid="stButton"] button {
         width: 100%;
-        height: 102px;
-        border-radius: 22px;
-        font-size: 28px;
+        height: 78px;
+        border-radius: 14px;
+        font-size: 24px;
         font-weight: 900;
         border: none;
         color: white !important;
-        box-shadow: 0 12px 22px rgba(0,0,0,0.20);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.16);
         transition: 0.2s ease;
-        margin-top: 0;
     }
 
     div[data-testid="stButton"] button:hover {
         transform: scale(1.02);
-        opacity: 0.97;
+        opacity: 0.95;
     }
 
     div[data-testid="stButton"] button:focus {
         outline: none !important;
         box-shadow: 0 0 0 3px rgba(59,130,246,0.30);
-    }
-
-    div[data-testid="stAlert"] {
-        border-radius: 14px;
-    }
-
-    /* Couleurs boutons de commande */
-    .start-btn button {
-        background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
-    }
-
-    .stop-btn button {
-        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
-    }
-
-    .reset-btn button {
-        background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -356,7 +347,7 @@ def main():
         last_update = LAST_UPDATE
 
     st.markdown(
-        '<div class="main-title">🏭 Dashboard IMS - Supervision Production</div>',
+        "<h1 style='text-align:center;'>🏭 Dashboard IMS - Supervision Production</h1>",
         unsafe_allow_html=True
     )
 
@@ -371,7 +362,7 @@ def main():
     else:
         st.caption("📭 Aucune donnée reçue pour le moment")
 
-    left, right = st.columns([1.03, 1.67], gap="large")
+    left, right = st.columns([1.05, 1.65], gap="large")
 
     with left:
         st.markdown("<h2 style='text-align:center;'>📡 Statut des Stations</h2>", unsafe_allow_html=True)
@@ -438,44 +429,63 @@ def main():
                 color_active="#2563eb"
             )
 
-    st.markdown("<div style='height:42px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
 
-    # UNE SEULE LIGNE DE COMMANDES
-    pad_left, b1, b2, b3, pad_right = st.columns([0.45, 1, 1, 1, 0.45], gap="large")
+    # Titres visuels boutons
+    c1, c2, c3 = st.columns(3, gap="large")
+    with c1:
+        button_label("🟢 START", "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)")
+    with c2:
+        button_label("🔴 STOP", "linear-gradient(180deg, #ef4444 0%, #dc2626 100%)")
+    with c3:
+        button_label("♻️ RESET", "linear-gradient(180deg, #94a3b8 0%, #64748b 100%)")
+
+    # CSS des 3 boutons streamlit
+    st.markdown("""
+    <style>
+    div[data-testid="column"]:nth-of-type(1) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
+    }
+    div[data-testid="column"]:nth-of-type(2) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+    }
+    div[data-testid="column"]:nth-of-type(3) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    b1, b2, b3 = st.columns(3, gap="large")
 
     with b1:
-        st.markdown('<div class="start-btn">', unsafe_allow_html=True)
-        if st.button("🟢 START", key="start_btn"):
+        if st.button("Envoyer START", key="start_btn"):
             ok = publish_command(TOPIC_CMD_START, "1")
             if ok:
-                st.success("✅ START envoyé")
+                st.success("✅ Commande START envoyée")
             else:
-                st.error("❌ Erreur START")
-        st.markdown('</div>', unsafe_allow_html=True)
+                st.error("❌ Erreur envoi START")
 
     with b2:
-        st.markdown('<div class="stop-btn">', unsafe_allow_html=True)
-        if st.button("🔴 STOP", key="stop_btn"):
+        if st.button("Envoyer STOP", key="stop_btn"):
             ok = publish_command(TOPIC_CMD_STOP, "1")
             if ok:
-                st.warning("🛑 STOP envoyé")
+                st.warning("🛑 Commande STOP envoyée")
             else:
-                st.error("❌ Erreur STOP")
-        st.markdown('</div>', unsafe_allow_html=True)
+                st.error("❌ Erreur envoi STOP")
 
     with b3:
-        st.markdown('<div class="reset-btn">', unsafe_allow_html=True)
-        if st.button("♻️ RESET", key="reset_btn"):
+        if st.button("Envoyer RESET", key="reset_btn"):
             ok = publish_command(TOPIC_CMD_RESET, "1")
             if ok:
-                st.info("🔄 RESET envoyé")
+                st.info("🔄 Commande RESET envoyée")
             else:
-                st.error("❌ Erreur RESET")
-        st.markdown('</div>', unsafe_allow_html=True)
+                st.error("❌ Erreur envoi RESET")
+
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
 
 
 if __name__ == "__main__":
-    main()final corrige ca stp code complet գործ
+    main()
