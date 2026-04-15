@@ -42,7 +42,6 @@ DATA = {
     "erreur_communication": 0
 }
 
-
 # =========================
 # MQTT CALLBACKS
 # =========================
@@ -103,14 +102,13 @@ def init_mqtt():
 
 
 # =========================
-# HELPERS MQTT
+# MQTT HELPERS
 # =========================
 def publish_command(topic, payload):
     global MQTT_CLIENT
     try:
         if MQTT_CLIENT is None:
             return False
-
         result = MQTT_CLIENT.publish(topic, payload)
         return result.rc == mqtt.MQTT_ERR_SUCCESS
     except Exception as e:
@@ -119,7 +117,7 @@ def publish_command(topic, payload):
 
 
 # =========================
-# HELPERS UI
+# UI HELPERS
 # =========================
 def big_status(text, bg="#16a34a"):
     return f"""
@@ -272,27 +270,6 @@ def alarm_row(icon, text, active=False):
     )
 
 
-def button_label(title, bg):
-    st.markdown(
-        f"""
-        <div style="
-            background:{bg};
-            color:white;
-            text-align:center;
-            padding:16px 12px;
-            border-radius:14px;
-            font-size:26px;
-            font-weight:900;
-            box-shadow:0 6px 14px rgba(0,0,0,0.15);
-            margin-bottom:8px;
-        ">
-            {title}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
 # =========================
 # APP
 # =========================
@@ -303,7 +280,7 @@ def main():
     st.markdown("""
     <style>
     .stApp {
-        background: linear-gradient(180deg, #edf4fb 0%, #dce8f3 100%);
+        background: linear-gradient(180deg, #dde6ef 0%, #cfd9e4 100%);
         color: #102030;
     }
 
@@ -320,24 +297,40 @@ def main():
 
     div[data-testid="stButton"] button {
         width: 100%;
-        height: 78px;
-        border-radius: 14px;
-        font-size: 24px;
+        height: 82px;
+        border-radius: 16px;
+        font-size: 30px;
         font-weight: 900;
         border: none;
         color: white !important;
-        box-shadow: 0 6px 14px rgba(0,0,0,0.16);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.18);
         transition: 0.2s ease;
+        margin-top: 6px;
     }
 
     div[data-testid="stButton"] button:hover {
         transform: scale(1.02);
-        opacity: 0.95;
+        opacity: 0.96;
     }
 
     div[data-testid="stButton"] button:focus {
         outline: none !important;
         box-shadow: 0 0 0 3px rgba(59,130,246,0.30);
+    }
+
+    /* 1er bouton = START */
+    div[data-testid="stHorizontalBlock"] > div:nth-child(1) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
+    }
+
+    /* 2e bouton = STOP */
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+    }
+
+    /* 3e bouton = RESET */
+    div[data-testid="stHorizontalBlock"] > div:nth-child(3) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -430,36 +423,12 @@ def main():
                 color_active="#2563eb"
             )
 
-    st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
-
-    # Titres visuels boutons
-    c1, c2, c3 = st.columns(3, gap="large")
-    with c1:
-        button_label("🟢 START", "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)")
-    with c2:
-        button_label("🔴 STOP", "linear-gradient(180deg, #ef4444 0%, #dc2626 100%)")
-    with c3:
-        button_label("♻️ RESET", "linear-gradient(180deg, #94a3b8 0%, #64748b 100%)")
-
-    # CSS des 3 boutons streamlit
-    st.markdown("""
-    <style>
-    div[data-testid="column"]:nth-of-type(1) div[data-testid="stButton"] button {
-        background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
-    }
-    div[data-testid="column"]:nth-of-type(2) div[data-testid="stButton"] button {
-        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
-    }
-    div[data-testid="column"]:nth-of-type(3) div[data-testid="stButton"] button {
-        background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown("<div style='height:36px;'></div>", unsafe_allow_html=True)
 
     b1, b2, b3 = st.columns(3, gap="large")
 
     with b1:
-        if st.button("Envoyer START", key="start_btn"):
+        if st.button("🟢 START", key="start_btn"):
             ok = publish_command(TOPIC_CMD_START, "1")
             if ok:
                 st.success("✅ Commande START envoyée")
@@ -467,7 +436,7 @@ def main():
                 st.error("❌ Erreur envoi START")
 
     with b2:
-        if st.button("Envoyer STOP", key="stop_btn"):
+        if st.button("🔴 STOP", key="stop_btn"):
             ok = publish_command(TOPIC_CMD_STOP, "1")
             if ok:
                 st.warning("🛑 Commande STOP envoyée")
@@ -475,14 +444,12 @@ def main():
                 st.error("❌ Erreur envoi STOP")
 
     with b3:
-        if st.button("Envoyer RESET", key="reset_btn"):
+        if st.button("♻️ RESET", key="reset_btn"):
             ok = publish_command(TOPIC_CMD_RESET, "1")
             if ok:
                 st.info("🔄 Commande RESET envoyée")
             else:
                 st.error("❌ Erreur envoi RESET")
-
-    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
