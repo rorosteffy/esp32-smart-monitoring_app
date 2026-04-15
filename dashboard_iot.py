@@ -109,6 +109,7 @@ def publish_command(topic, payload):
     try:
         if MQTT_CLIENT is None:
             return False
+
         result = MQTT_CLIENT.publish(topic, payload)
         return result.rc == mqtt.MQTT_ERR_SUCCESS
     except Exception as e:
@@ -124,14 +125,14 @@ def big_status(text, bg="#16a34a"):
     <div style="
         background:{bg};
         border-radius:18px;
-        padding:24px 20px;
+        padding:24px 18px;
         text-align:center;
         color:white;
-        font-size:23px;
+        font-size:24px;
         font-weight:800;
         box-shadow:0 8px 18px rgba(0,0,0,0.16);
         border:1px solid rgba(255,255,255,0.12);
-        min-height:82px;
+        min-height:84px;
         display:flex;
         align-items:center;
         justify-content:center;
@@ -280,7 +281,7 @@ def main():
     st.markdown("""
     <style>
     .stApp {
-        background: linear-gradient(180deg, #aebaca 0%, #9cabbc 100%);
+        background: linear-gradient(180deg, #b4c0ce 0%, #a1b0c0 100%);
         color: #102030;
     }
 
@@ -293,13 +294,13 @@ def main():
     h1, h2, h3 {
         color: #0f223a !important;
         font-weight: 800 !important;
-        margin-bottom: 0.4rem !important;
+        margin-bottom: 0.45rem !important;
     }
 
     .main-title {
         width: 100%;
         text-align: center;
-        font-size: 2.7rem;
+        font-size: 2.75rem;
         font-weight: 900;
         color: #0b1f38;
         margin-top: 0.15rem;
@@ -309,7 +310,7 @@ def main():
 
     div[data-testid="stButton"] button {
         width: 100%;
-        height: 96px;
+        height: 102px;
         border-radius: 22px;
         font-size: 28px;
         font-weight: 900;
@@ -332,6 +333,19 @@ def main():
 
     div[data-testid="stAlert"] {
         border-radius: 14px;
+    }
+
+    /* Couleurs boutons de commande */
+    .start-btn button {
+        background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
+    }
+
+    .stop-btn button {
+        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+    }
+
+    .reset-btn button {
+        background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -430,53 +444,38 @@ def main():
     pad_left, b1, b2, b3, pad_right = st.columns([0.45, 1, 1, 1, 0.45], gap="large")
 
     with b1:
-        st.markdown("""
-        <style>
-        div[data-testid="column"]:nth-of-type(2) div[data-testid="stButton"] button {
-            background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="start-btn">', unsafe_allow_html=True)
         if st.button("🟢 START", key="start_btn"):
             ok = publish_command(TOPIC_CMD_START, "1")
             if ok:
                 st.success("✅ START envoyé")
             else:
                 st.error("❌ Erreur START")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with b2:
-        st.markdown("""
-        <style>
-        div[data-testid="column"]:nth-of-type(3) div[data-testid="stButton"] button {
-            background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="stop-btn">', unsafe_allow_html=True)
         if st.button("🔴 STOP", key="stop_btn"):
             ok = publish_command(TOPIC_CMD_STOP, "1")
             if ok:
                 st.warning("🛑 STOP envoyé")
             else:
                 st.error("❌ Erreur STOP")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with b3:
-        st.markdown("""
-        <style>
-        div[data-testid="column"]:nth-of-type(4) div[data-testid="stButton"] button {
-            background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="reset-btn">', unsafe_allow_html=True)
         if st.button("♻️ RESET", key="reset_btn"):
             ok = publish_command(TOPIC_CMD_RESET, "1")
             if ok:
                 st.info("🔄 RESET envoyé")
             else:
                 st.error("❌ Erreur RESET")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
 
 
 if __name__ == "__main__":
-    main()
+    main()final corrige ca stp code complet գործ
