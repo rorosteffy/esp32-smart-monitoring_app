@@ -1,304 +1,353 @@
+import json
+import time
+import socket
+import threading
+from datetime import datetime
+
 import streamlit as st
 import paho.mqtt.client as mqtt
-import json
-import threading
-import time
-from datetime import datetime
-from collections import deque
-import pandas as pd
-import altair as alt
 
-# ==========================
-# MQTT CONFIG
-# ==========================
+# =========================
+# CONFIG MQTT
+# =========================
 MQTT_BROKER = "51.103.239.173"
-MQTT_PORT = 1883
-TOPIC_DATA = "capteur/data"
+MQTT_WS_PORT = 9001
+MQTT_WS_PATH = "/"
+TOPIC_DATA = "ims/dashboard"
 
-# ==========================
-# MQTT BRIDGE
-# ==========================
-class MqttBridge:
-    def __init__(self):
-        self.connected = False
-        self.queue = deque(maxlen=500)
-        self.lock = threading.Lock()
+# =========================
+# ETAT GLOBAL
+# =========================
+LOCK = threading.Lock()
+MQTT_CONNECTED = False
+LAST_UPDATE = None
 
-    def push(self, payload):
-        with self.lock:
-            self.queue.append(payload)
+DATA = {
+    "ims10_ready": 1,
+    "ims6_control_ok": 1,
+    "ims6_control_nok": 0,
+    "ims7_run": 1,
+    "pieces_produites": 1285,
+    "pieces_rejetees": 47,
+    "piece_prete": 1,
+    "controle_ok": 1,
+    "etat_robot": "En Attente",
+    "defaut_capteur": 0,
+    "station_bloquee": 0,
+    "erreur_communication": 0
+}
 
-    def pop_all(self):
-        items = []
-        with self.lock:
-            while self.queue:
-                items.append(self.queue.popleft())
-        return items
+# =========================
+# MQTT CALLBACKS
+# =========================
+def on_connect(client, userdata, flags, reason_code, properties=None):
+    global MQTT_CONNECTED
+    with LOCK:
+        MQTT_CONNECTED = (reason_code == 0)
+
+    if reason_code == 0:
+        client.subscribe(TOPIC_DATA)
+        print("MQTT CONNECTED")
+    else:
+        print("MQTT CONNECT ERROR:", reason_code)
+
+
+def on_disconnect(client, userdata, reason_code, properties=None):
+    global MQTT_CONNECTED
+    with LOCK:
+        MQTT_CONNECTED = False
+    print("MQTT DISCONNECTED")
+
+
+def on_message(client, userdata, msg):
+    global LAST_UPDATE
+    try:
+        payload = json.loads(msg.payload.decode("utf-8", errors="ignore"))
+        with LOCK:
+            for k in DATA.keys():
+                if k in payload:
+                    DATA[k] = payload[k]
+            LAST_UPDATE = datetime.now()
+    except Exception as e:
+        print("JSON invalide:", e)
+
 
 @st.cache_resource
-def get_bridge():
-    bridge = MqttBridge()
-
-    # ✅ paho v1 ET v2 compatible
-    def on_connect(client, userdata, flags, rc, properties=None):
-        bridge.connected = (rc == 0)
-        if rc == 0:
-            client.subscribe(TOPIC_DATA)
-
-    def on_disconnect(client, userdata, rc, properties=None):
-        bridge.connected = False
-
-    def on_message(client, userdata, msg):
-        try:
-            data = json.loads(msg.payload.decode("utf-8"))
-            data["_time"] = datetime.now()  # datetime direct
-            bridge.push(data)
-        except:
-            pass
-
-    client = mqtt.Client(protocol=mqtt.MQTTv311)
+def init_mqtt():
+    cid = f"streamlit_{socket.gethostname()}"
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=cid,
+        protocol=mqtt.MQTTv311,
+        transport="websockets",
+    )
+    client.ws_set_options(path=MQTT_WS_PATH)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
-    client.reconnect_delay_set(min_delay=1, max_delay=5)
+    client.reconnect_delay_set(min_delay=1, max_delay=10)
+    client.connect_async(MQTT_BROKER, MQTT_WS_PORT, keepalive=60)
+    client.loop_start()
+    return client
 
-    def loop():
-        while True:
-            try:
-                client.connect(MQTT_BROKER, MQTT_PORT, 60)
-                client.loop_forever()
-            except:
-                bridge.connected = False
-                time.sleep(2)
 
-    threading.Thread(target=loop, daemon=True).start()
-    return bridge
-
-# ==========================
-# PAGE CONFIG
-# ==========================
-st.set_page_config(page_title="Dashboard IoT EPHEC", layout="wide")
-
-# ==========================
-# 🎨 THEME PRO BLEU/ROSE (un peu sombre)
-# ==========================
-st.markdown("""
-<style>
-.stApp{
-  background: linear-gradient(135deg,
-    #93a8c6 0%,
-    #a7b7d6 30%,
-    #c7b0d8 65%,
-    #e7e2f2 100%);
-  color:#0f172a;
-}
-.block-container{ padding-top: 1.8rem; }
-h1,h2,h3{ color:#0b1220; }
-
-.metric-card{
-  background: rgba(255,255,255,0.78);
-  border: 1px solid rgba(255,255,255,0.55);
-  border-radius: 18px;
-  padding: 16px 16px 12px 16px;
-  box-shadow: 0 14px 35px rgba(15,23,42,0.12);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  position: relative;
-  overflow: hidden;
-  min-height: 105px;
-}
-.metric-card::before{
-  content:"";
-  position:absolute;
-  top:0; left:0; right:0;
-  height:7px;
-  background: var(--accent, linear-gradient(90deg,#3b82f6,#ec4899));
-}
-.metric-label{ font-size: 0.95rem; opacity: 0.85; margin-bottom: 6px; }
-.metric-value{ font-size: 2.0rem; font-weight: 850; letter-spacing: -0.02em; color: var(--val, #0f172a); }
-.metric-sub{ margin-top: 6px; font-size: 0.85rem; opacity: 0.70; }
-
-[data-testid="stAltairChart"]{
-  background: rgba(255,255,255,0.72);
-  border-radius: 18px;
-  padding: 10px 10px 6px 10px;
-  box-shadow: 0 14px 35px rgba(15,23,42,0.11);
-  border: 1px solid rgba(255,255,255,0.55);
-}
-section[data-testid="stSidebar"]{
-  background: rgba(255,255,255,0.55);
-  backdrop-filter: blur(12px);
-}
-</style>
-""", unsafe_allow_html=True)
-
-def metric_card(label, value, accent_css, value_color, sub=""):
+# =========================
+# HELPERS UI
+# =========================
+def card_box(title, content, color="#1f2937", min_height="110px"):
     st.markdown(
         f"""
-        <div class="metric-card" style="--accent:{accent_css}; --val:{value_color};">
-          <div class="metric-label">{label}</div>
-          <div class="metric-value">{value}</div>
-          <div class="metric-sub">{sub}</div>
+        <div style="
+            background:{color};
+            border:1px solid rgba(255,255,255,0.08);
+            border-radius:12px;
+            padding:18px;
+            min-height:{min_height};
+            box-shadow:0 2px 8px rgba(0,0,0,0.25);
+            color:white;
+        ">
+            <div style="font-size:20px; font-weight:700; margin-bottom:8px;">{title}</div>
+            <div style="font-size:18px;">{content}</div>
         </div>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
-# ==========================
-# STATE
-# ==========================
-st.session_state.setdefault("history", [])
-st.session_state.setdefault("last", {})
-st.session_state.setdefault("last_seen", None)
 
-bridge = get_bridge()
+def big_status(text, bg="#16a34a"):
+    return f"""
+    <div style="
+        background:{bg};
+        border-radius:10px;
+        padding:20px;
+        text-align:center;
+        color:white;
+        font-size:30px;
+        font-weight:800;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+    ">{text}</div>
+    """
 
-# ==========================
-# UPDATE DATA
-# ==========================
-msgs = bridge.pop_all()
-for m in msgs:
-    st.session_state.last = m
-    st.session_state.last_seen = datetime.now()
-    st.session_state.history.append(m)
 
-st.session_state.history = st.session_state.history[-250:]
-data = st.session_state.last or {}
+def dual_status(left_text, ok_active=True):
+    ok_color = "#22c55e" if ok_active else "#14532d"
+    nok_color = "#dc2626" if not ok_active else "#7f1d1d"
+    return f"""
+    <div style="background:#16a34a; border-radius:28px; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; color:white; font-weight:800; font-size:28px;">
+        <span>{left_text}</span>
+        <div style="display:flex; gap:10px;">
+            <span style="background:{ok_color}; padding:8px 18px; border-radius:8px; font-size:22px;">OK</span>
+            <span style="background:{nok_color}; padding:8px 18px; border-radius:8px; font-size:22px;">NOK</span>
+        </div>
+    </div>
+    """
 
-# ==========================
-# HEADER + STATUS
-# ==========================
-st.title("🌡️ Gestion Intelligente Température & Sécurité – IoT")
-st.caption(f"Broker : {MQTT_BROKER} | Port : {MQTT_PORT} | Topic : {TOPIC_DATA}")
 
-if bridge.connected:
-    st.success("✅ MQTT connecté (TCP 1883)")
-else:
-    st.error("🔴 MQTT déconnecté")
+def dual_run_stop(is_run=True):
+    run_color = "#16a34a" if is_run else "#14532d"
+    stop_color = "#166534" if is_run else "#15803d"
+    return f"""
+    <div style="background:#16a34a; border-radius:10px; padding:14px 18px; display:flex; align-items:center; justify-content:flex-start; gap:20px; color:white; font-weight:800; font-size:28px;">
+        <span>IMS7</span>
+        <span>RUN</span>
+        <span style="background:{stop_color}; padding:8px 20px; border-radius:8px; font-size:22px;">STOP</span>
+    </div>
+    """
 
-if st.session_state.last_seen:
-    st.info(f"📥 Dernière donnée: {st.session_state.last_seen.strftime('%H:%M:%S')} (+{len(msgs)} msg)")
-else:
-    st.warning("⏳ En attente de données MQTT… (vérifie l’ESP32 publie capteur/data)")
 
-st.divider()
+def value_card(title, value, header_color, body_color):
+    st.markdown(
+        f"""
+        <div style="
+            border-radius:10px;
+            overflow:hidden;
+            box-shadow:0 2px 8px rgba(0,0,0,0.25);
+            border:1px solid rgba(255,255,255,0.08);
+        ">
+            <div style="
+                background:{header_color};
+                color:white;
+                padding:18px;
+                font-size:20px;
+                font-weight:700;
+            ">{title}</div>
+            <div style="
+                background:{body_color};
+                color:white;
+                padding:24px;
+                text-align:center;
+                font-size:56px;
+                font-weight:800;
+            ">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# ==========================
-# METRICS
-# ==========================
-c1, c2, c3, c4 = st.columns(4)
 
-temp = data.get("temperature", "—")
-hum = data.get("humidity", "—")
-seuil = data.get("seuil", data.get("seuilPot", "—"))
-alarm = bool(data.get("alarm", False))
+def small_indicator(text, active=True, color_active="#16a34a", color_inactive="#374151"):
+    bg = color_active if active else color_inactive
+    st.markdown(
+        f"""
+        <div style="
+            background:{bg};
+            color:white;
+            border-radius:8px;
+            padding:18px;
+            font-size:18px;
+            font-weight:700;
+            text-align:center;
+            min-height:52px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            border:1px solid rgba(255,255,255,0.08);
+        ">
+            {text}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-with c1:
-    metric_card("🌡️ Température (°C)", f"{temp}",
-                "linear-gradient(90deg,#2563eb,#22c55e)", "#0b1b3a", "Mesure DHT11")
-with c2:
-    metric_card("💧 Humidité (%)", f"{hum}",
-                "linear-gradient(90deg,#06b6d4,#3b82f6)", "#083344", "Mesure DHT11")
-with c3:
-    metric_card("📦 Seuil (°C)", f"{seuil}",
-                "linear-gradient(90deg,#8b5cf6,#ec4899)", "#2e1065", "Consigne / Pot")
-with c4:
-    metric_card("🚨 Alarme", "ACTIVE" if alarm else "OK",
-                "linear-gradient(90deg,#ef4444,#f59e0b)" if alarm else "linear-gradient(90deg,#22c55e,#3b82f6)",
-                "#7f1d1d" if alarm else "#0f172a",
-                "État global")
 
-st.divider()
+def alarm_row(icon, text, active=False):
+    bg = "#3f1d1d" if active else "#232a33"
+    border = "#dc2626" if active else "rgba(255,255,255,0.08)"
+    st.markdown(
+        f"""
+        <div style="
+            background:{bg};
+            border:1px solid {border};
+            border-radius:8px;
+            padding:16px 18px;
+            color:white;
+            font-size:18px;
+            font-weight:600;
+            margin-bottom:12px;
+        ">
+            {icon} &nbsp; {text}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# ==========================
-# FLAMMES
-# ==========================
-f1, f2 = st.columns(2)
 
-with f1:
-    st.subheader("🔥 Flamme Steffy")
-    if data.get("flame") == 1:
-        st.error("🔥 FEU DÉTECTÉ")
-    elif data.get("flame") == 0:
-        st.success("✅ Pas de flamme")
+# =========================
+# APP
+# =========================
+def main():
+    st.set_page_config(page_title="Dashboard IMS", layout="wide")
+
+    init_mqtt()
+
+    st.markdown("""
+    <style>
+    .stApp {
+        background: linear-gradient(180deg, #1a1f25 0%, #0f1318 100%);
+        color: white;
+    }
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+        max-width: 1450px;
+    }
+    h1, h2, h3 {
+        color: white !important;
+    }
+    div[data-testid="stButton"] button {
+        width: 100%;
+        height: 80px;
+        border-radius: 10px;
+        font-size: 28px;
+        font-weight: 800;
+        border: none;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with LOCK:
+        d = dict(DATA)
+        connected = MQTT_CONNECTED
+        last_update = LAST_UPDATE
+
+    # Header
+    st.markdown("<h1 style='text-align:center;'>Dashboard IMS - Supervision Production</h1>", unsafe_allow_html=True)
+
+    if connected:
+        st.success("MQTT connecté")
     else:
-        st.info("En attente…")
+        st.error("MQTT déconnecté")
 
-with f2:
-    st.subheader("🔥 Flamme Hande")
-    if data.get("flameHande") == 1:
-        st.error("🔥 FEU DÉTECTÉ")
-    elif data.get("flameHande") == 0:
-        st.success("✅ Pas de flamme")
+    if last_update:
+        st.caption(f"Dernière mise à jour : {last_update.strftime('%H:%M:%S')}")
     else:
-        st.info("En attente…")
+        st.caption("Aucune donnée reçue pour le moment")
 
-st.divider()
+    # Layout principal
+    left, right = st.columns([1.05, 1.65], gap="large")
 
-# ==========================
-# 📈 GRAPHIQUES (COURBES + STEP)
-# ==========================
-st.subheader("📈 Graphiques temps réel (courbes)")
+    with left:
+        st.markdown("<h2 style='text-align:center;'>Statut des Stations</h2>", unsafe_allow_html=True)
+        st.markdown(big_status("IMS10 READY" if d["ims10_ready"] else "IMS10 BUSY", "#16a34a" if d["ims10_ready"] else "#dc2626"), unsafe_allow_html=True)
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-hist = st.session_state.history
-if not hist:
-    st.info("Aucune donnée pour les graphiques.")
-else:
-    df = pd.DataFrame(hist)
-    df["time"] = pd.to_datetime(df["_time"], errors="coerce")
-    df = df.dropna(subset=["time"]).tail(250)
-
-    def line_chart(col, title, unit, color_hex):
-        if col not in df.columns:
-            return None
-        return (
-            alt.Chart(df)
-            .mark_line(interpolate="monotone", strokeWidth=3, color=color_hex)
-            .encode(
-                x=alt.X("time:T", title="Temps"),
-                y=alt.Y(f"{col}:Q", title=unit),
-                tooltip=["time:T", alt.Tooltip(f"{col}:Q")]
-            )
-            .properties(height=280, title=title)
+        st.markdown(
+            dual_status("IMS6  CONTROL", ok_active=bool(d["ims6_control_ok"])),
+            unsafe_allow_html=True
         )
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-    def step_chart(col, title, unit, color_hex):
-        if col not in df.columns:
-            return None
-        return (
-            alt.Chart(df)
-            .mark_line(interpolate="step-after", strokeWidth=4, color=color_hex)
-            .encode(
-                x=alt.X("time:T", title="Temps"),
-                y=alt.Y(f"{col}:Q", title=unit, scale=alt.Scale(domain=[-0.05, 1.05])),
-                tooltip=["time:T", alt.Tooltip(f"{col}:Q")]
-            )
-            .properties(height=280, title=title)
-        )
+        ims7_text = "IMS7 RUN" if d["ims7_run"] else "IMS7 STOP"
+        ims7_color = "#16a34a" if d["ims7_run"] else "#dc2626"
+        st.markdown(big_status(ims7_text, ims7_color), unsafe_allow_html=True)
 
-    g1, g2 = st.columns(2)
-    with g1:
-        ch = line_chart("temperature", "Température", "°C", "#2563eb")
-        if ch: st.altair_chart(ch, use_container_width=True)
-    with g2:
-        ch = line_chart("humidity", "Humidité", "%", "#ec4899")
-        if ch: st.altair_chart(ch, use_container_width=True)
+        st.markdown("<div style='height:26px;'></div>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align:center;'>Alarmes</h2>", unsafe_allow_html=True)
 
-    g3, g4 = st.columns(2)
-    with g3:
-        ch = line_chart("seuil", "Seuil (si présent)", "°C", "#7c3aed")
-        if ch: st.altair_chart(ch, use_container_width=True)
-        else:
-            st.info("Pas de colonne 'seuil' dans l’historique (OK si tu envoies seuilPot).")
-    with g4:
-        ch = step_chart("flame", "IR / Flamme (0/1) - STEP", "0/1", "#f97316")
-        if ch: st.altair_chart(ch, use_container_width=True)
+        alarm_row("⚠️", "Défaut Capteur", active=bool(d["defaut_capteur"]))
+        alarm_row("⛔", "Station Bloquée", active=bool(d["station_bloquee"]))
+        alarm_row("📶", "Erreur Communication", active=bool(d["erreur_communication"]))
 
-with st.expander("🧪 Debug JSON (dernier message)"):
-    st.json(data)
+    with right:
+        st.markdown("<h2 style='text-align:center;'>Flux de Production</h2>", unsafe_allow_html=True)
+        p1, p2 = st.columns(2, gap="medium")
+        with p1:
+            value_card("⚙️  Pièces Produites", d["pieces_produites"], "#16a34a", "#166534")
+        with p2:
+            value_card("⚠️  Pièces Rejetées", d["pieces_rejetees"], "#dc2626", "#991b1b")
 
-# ==========================
-# AUTO REFRESH
-# ==========================
-time.sleep(1)
-st.rerun()
+        st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align:center;'>Variables Clés</h2>", unsafe_allow_html=True)
+
+        v1, v2, v3 = st.columns(3, gap="medium")
+        with v1:
+            small_indicator("✅ Signal: Pièce Prête" if d["piece_prete"] else "⬜ Signal: Pas prête", active=bool(d["piece_prete"]))
+        with v2:
+            small_indicator("✅ Contrôle: OK" if d["controle_ok"] else "❌ Contrôle: NOK", active=bool(d["controle_ok"]))
+        with v3:
+            small_indicator(f"🤖 État Robot: {d['etat_robot']}", active=True, color_active="#2563eb")
+
+    st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
+
+    # Boutons
+    b1, b2, b3 = st.columns([1, 1, 1], gap="large")
+
+    with b1:
+        if st.button("START"):
+            st.success("Commande START envoyée")
+    with b2:
+        if st.button("STOP"):
+            st.warning("Commande STOP envoyée")
+    with b3:
+        if st.button("RESET"):
+            st.info("Commande RESET envoyée")
+
+    st.markdown("<div style='height:15px;'></div>", unsafe_allow_html=True)
+
+    # Auto-refresh simple
+    time.sleep(2)
+    st.rerun()
+
+
+if __name__ == "__main__":
+    main()
