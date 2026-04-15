@@ -270,28 +270,6 @@ def alarm_row(icon, text, active=False):
     )
 
 
-def command_card(label, color1, color2):
-    st.markdown(
-        f"""
-        <div style="
-            background:linear-gradient(180deg, {color1} 0%, {color2} 100%);
-            color:white;
-            text-align:center;
-            padding:20px 10px;
-            border-radius:18px;
-            font-size:30px;
-            font-weight:900;
-            box-shadow:0 10px 18px rgba(0,0,0,0.20);
-            border:1px solid rgba(255,255,255,0.16);
-            margin-bottom:10px;
-        ">
-            {label}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
 # =========================
 # APP
 # =========================
@@ -302,32 +280,50 @@ def main():
     st.markdown("""
     <style>
     .stApp {
-        background: linear-gradient(180deg, #bfc9d6 0%, #aebbc9 100%);
+        background: linear-gradient(180deg, #b8c4d1 0%, #a7b4c3 100%);
         color: #102030;
     }
 
     .block-container {
         max-width: 1460px;
-        padding-top: 0.6rem;
+        padding-top: 0.4rem;
         padding-bottom: 1rem;
     }
 
     h1, h2, h3 {
         color: #102030 !important;
         font-weight: 800 !important;
+        margin-bottom: 0.4rem !important;
+    }
+
+    .main-title {
+        text-align: center;
+        font-size: 2.35rem;
+        font-weight: 900;
+        color: #0f223a;
+        margin-top: 0.2rem;
+        margin-bottom: 0.8rem;
+        line-height: 1.15;
+    }
+
+    .main-title .emoji {
+        margin-right: 10px;
+        font-size: 2rem;
+        vertical-align: middle;
     }
 
     div[data-testid="stButton"] button {
         width: 100%;
-        height: 92px;
-        border-radius: 18px;
-        font-size: 24px;
+        height: 110px;
+        border-radius: 22px;
+        font-size: 30px;
         font-weight: 900;
         border: none;
         color: white !important;
-        box-shadow: 0 10px 18px rgba(0,0,0,0.20);
+        box-shadow: 0 12px 24px rgba(0,0,0,0.22);
         transition: 0.2s ease;
-        margin-top: 6px;
+        margin-top: 0;
+        margin-bottom: 0;
     }
 
     div[data-testid="stButton"] button:hover {
@@ -339,6 +335,24 @@ def main():
         outline: none !important;
         box-shadow: 0 0 0 3px rgba(59,130,246,0.30);
     }
+
+    /* Boutons commandes */
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
+    }
+
+    div[data-testid="stHorizontalBlock"] > div:nth-child(3) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+    }
+
+    div[data-testid="stHorizontalBlock"] > div:nth-child(4) div[data-testid="stButton"] button {
+        background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
+    }
+
+    /* Messages boutons */
+    div[data-testid="stAlert"] {
+        border-radius: 14px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -348,7 +362,11 @@ def main():
         last_update = LAST_UPDATE
 
     st.markdown(
-        "<h1 style='text-align:center;'>🏭 Dashboard IMS - Supervision Production</h1>",
+        """
+        <div class="main-title">
+            <span class="emoji">🏭</span>Dashboard IMS - Supervision Production
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
@@ -430,32 +448,29 @@ def main():
                 color_active="#2563eb"
             )
 
-    st.markdown("<div style='height:42px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:44px;'></div>", unsafe_allow_html=True)
 
-    # Boutons plus gros et plus pro
-    c0, c1, c2, c3, c4 = st.columns([0.25, 1, 1, 1, 0.25], gap="large")
+    # UNE seule vraie ligne de gros boutons
+    pad_left, b1, b2, b3, pad_right = st.columns([0.4, 1, 1, 1, 0.4], gap="large")
 
-    with c1:
-        command_card("🟢 START", "#22c55e", "#16a34a")
-        if st.button("Lancer", key="start_btn"):
+    with b1:
+        if st.button("🟢  START", key="start_btn"):
             ok = publish_command(TOPIC_CMD_START, "1")
             if ok:
                 st.success("✅ START envoyé")
             else:
                 st.error("❌ Erreur START")
 
-    with c2:
-        command_card("🔴 STOP", "#ef4444", "#dc2626")
-        if st.button("Arrêter", key="stop_btn"):
+    with b2:
+        if st.button("🔴  STOP", key="stop_btn"):
             ok = publish_command(TOPIC_CMD_STOP, "1")
             if ok:
                 st.warning("🛑 STOP envoyé")
             else:
                 st.error("❌ Erreur STOP")
 
-    with c3:
-        command_card("♻️ RESET", "#94a3b8", "#64748b")
-        if st.button("Réinitialiser", key="reset_btn"):
+    with b3:
+        if st.button("♻️  RESET", key="reset_btn"):
             ok = publish_command(TOPIC_CMD_RESET, "1")
             if ok:
                 st.info("🔄 RESET envoyé")
