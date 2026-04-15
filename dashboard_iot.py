@@ -131,7 +131,7 @@ def big_status(text, bg="#16a34a"):
         font-weight:800;
         box-shadow:0 6px 14px rgba(0,0,0,0.15);
         border:1px solid rgba(255,255,255,0.12);
-        min-height:76px;
+        min-height:78px;
         display:flex;
         align-items:center;
         justify-content:center;
@@ -280,7 +280,7 @@ def main():
     st.markdown("""
     <style>
     .stApp {
-        background: linear-gradient(180deg, #dde6ef 0%, #cfd9e4 100%);
+        background: linear-gradient(180deg, #cbd5e1 0%, #b8c4d2 100%);
         color: #102030;
     }
 
@@ -297,19 +297,18 @@ def main():
 
     div[data-testid="stButton"] button {
         width: 100%;
-        height: 82px;
+        height: 85px;
         border-radius: 16px;
-        font-size: 30px;
+        font-size: 26px;
         font-weight: 900;
         border: none;
         color: white !important;
-        box-shadow: 0 6px 14px rgba(0,0,0,0.18);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.20);
         transition: 0.2s ease;
-        margin-top: 6px;
     }
 
     div[data-testid="stButton"] button:hover {
-        transform: scale(1.02);
+        transform: scale(1.05);
         opacity: 0.96;
     }
 
@@ -318,19 +317,17 @@ def main():
         box-shadow: 0 0 0 3px rgba(59,130,246,0.30);
     }
 
-    /* 1er bouton = START */
-    div[data-testid="stHorizontalBlock"] > div:nth-child(1) div[data-testid="stButton"] button {
-        background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
+    /* Boutons de commande centrés */
+    section.main div.block-container div[data-testid="stHorizontalBlock"].command-row > div:nth-child(2) button {
+        background: linear-gradient(180deg, #22c55e, #16a34a) !important;
     }
 
-    /* 2e bouton = STOP */
-    div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stButton"] button {
-        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+    section.main div.block-container div[data-testid="stHorizontalBlock"].command-row > div:nth-child(3) button {
+        background: linear-gradient(180deg, #ef4444, #dc2626) !important;
     }
 
-    /* 3e bouton = RESET */
-    div[data-testid="stHorizontalBlock"] > div:nth-child(3) div[data-testid="stButton"] button {
-        background: linear-gradient(180deg, #94a3b8 0%, #64748b 100%) !important;
+    section.main div.block-container div[data-testid="stHorizontalBlock"].command-row > div:nth-child(4) button {
+        background: linear-gradient(180deg, #94a3b8, #64748b) !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -423,33 +420,37 @@ def main():
                 color_active="#2563eb"
             )
 
-    st.markdown("<div style='height:36px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:42px;'></div>", unsafe_allow_html=True)
 
-    b1, b2, b3 = st.columns(3, gap="large")
+    # Ligne de boutons bien centrée
+    st.markdown('<div class="command-row">', unsafe_allow_html=True)
+    spacer1, b1, b2, b3, spacer2 = st.columns([0.5, 1, 1, 1, 0.5], gap="large")
 
     with b1:
         if st.button("🟢 START", key="start_btn"):
             ok = publish_command(TOPIC_CMD_START, "1")
             if ok:
-                st.success("✅ Commande START envoyée")
+                st.success("✅ START envoyé")
             else:
-                st.error("❌ Erreur envoi START")
+                st.error("❌ Erreur START")
 
     with b2:
         if st.button("🔴 STOP", key="stop_btn"):
             ok = publish_command(TOPIC_CMD_STOP, "1")
             if ok:
-                st.warning("🛑 Commande STOP envoyée")
+                st.warning("🛑 STOP envoyé")
             else:
-                st.error("❌ Erreur envoi STOP")
+                st.error("❌ Erreur STOP")
 
     with b3:
         if st.button("♻️ RESET", key="reset_btn"):
             ok = publish_command(TOPIC_CMD_RESET, "1")
             if ok:
-                st.info("🔄 Commande RESET envoyée")
+                st.info("🔄 RESET envoyé")
             else:
-                st.error("❌ Erreur envoi RESET")
+                st.error("❌ Erreur RESET")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
